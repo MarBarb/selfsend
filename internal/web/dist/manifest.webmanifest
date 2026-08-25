@@ -1,0 +1,14 @@
+{
+  "name": "SelfSend",
+  "short_name": "SelfSend",
+  "description": "像聊天一样，给自己发文件。",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#edf1ef",
+  "theme_color": "#176b5b",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -3,7 +3,7 @@
 .vscode/
 frontend/node_modules/
 data/
-dist/
+/dist/
 *.db
 *.db-shm
 *.db-wal
