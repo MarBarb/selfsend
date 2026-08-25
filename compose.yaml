@@ -1,0 +1,13 @@
+services:
+  selfsend:
+    build: .
+    image: selfsend:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      SELFSEND_TRUST_PROXY: "false"
+      # 推荐首次启动后在网页创建密码。也可以取消下一行注释，通过环境变量初始化。
+      # SELFSEND_ADMIN_PASSWORD: "replace-with-a-long-password"
