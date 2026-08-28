@@ -32,6 +32,14 @@ docker compose up -d --build
 
 打开 `http://localhost:8080`，首次进入时创建管理员密码。局域网中的其他设备可通过运行 SelfSend 的电脑 IP 访问，例如 `http://192.168.1.20:8080`。
 
+首次构建需要下载 Go 模块。`compose.yaml` 在大陆网络下默认使用 `https://goproxy.cn,direct`；如果需要使用官方模块代理：
+
+```bash
+GOPROXY=https://proxy.golang.org,direct docker compose up -d --build
+```
+
+如果看到 `Docker Compose requires buildx plugin`，这是 Docker 回退到旧构建器的警告，不会阻止构建。安装 buildx 可以消除警告并获得更好的缓存，但不是运行 SelfSend 的必要条件。
+
 数据保存在仓库目录下的 `data/` 中：
 
 ```text
