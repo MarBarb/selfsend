@@ -2,6 +2,7 @@ services:
   selfsend:
     build:
       context: .
+      dockerfile: Dockerfile.local
       args:
         # 大陆网络默认使用镜像代理；可通过宿主机 GOPROXY 环境变量覆盖。
         GOPROXY: "${GOPROXY:-https://goproxy.cn,direct}"
