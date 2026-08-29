@@ -6,11 +6,14 @@ services:
       - "8080:8080"
       - "38081:38081/udp"
     volumes:
-      - ./data:/data
+      - selfsend-data:/data
     environment:
       SELFSEND_TRUST_PROXY: "false"
       SELFSEND_DISCOVERY: "true"
-      # 如果局域网 DNS 提供稳定域名，可在迁移前后配置为同一个地址。
+      # 如果局域网 DNS 提供稳定域名，可以取消注释并填写地址。
       # SELFSEND_CANONICAL_URL: "http://selfsend.home:8080"
-      # 推荐首次启动后在网页创建密码。也可以取消下一行注释，通过环境变量初始化。
-      # SELFSEND_ADMIN_PASSWORD: "replace-with-a-long-password"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  selfsend-data:

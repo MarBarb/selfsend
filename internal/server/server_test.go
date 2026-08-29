@@ -37,10 +37,17 @@ func TestSetupUploadTimelineDownloadAndDelete(t *testing.T) {
 	if status.SetupRequired || !status.Authenticated {
 		t.Fatalf("unexpected initialized status: %+v", status)
 	}
+	response = jsonRequest(t, client, http.MethodPost, httpServer.URL+"/api/devices/register", `{"id":"device-test-1234567890","name":"测试电脑","avatar":"💻"}`)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("register device status = %d, body = %s", response.StatusCode, readBody(t, response))
+	}
+	response.Body.Close()
+	_, conversationID := pairDevice(t, httpServer, client, "测试手机", "📱")
 
 	content := []byte("hello from SelfSend")
 	metadata := "filename " + base64.StdEncoding.EncodeToString([]byte("../hello.txt")) +
-		",filetype " + base64.StdEncoding.EncodeToString([]byte("text/plain"))
+		",filetype " + base64.StdEncoding.EncodeToString([]byte("text/plain")) +
+		",conversation " + base64.StdEncoding.EncodeToString([]byte(conversationID))
 	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/api/uploads", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -64,13 +71,14 @@ func TestSetupUploadTimelineDownloadAndDelete(t *testing.T) {
 	patchUpload(t, client, httpServer.URL+location, 0, content[:5], 5)
 	patchUpload(t, client, httpServer.URL+location, 5, content[5:], int64(len(content)))
 
-	response, err = client.Get(httpServer.URL + "/api/items")
+	response, err = client.Get(httpServer.URL + "/api/items?conversation_id=" + conversationID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var timeline struct {
 		Items []struct {
 			ID       string `json:"id"`
+			Kind     string `json:"kind"`
 			FileName string `json:"file_name"`
 			Size     int64  `json:"size"`
 			SHA256   string `json:"sha256"`
@@ -84,7 +92,7 @@ func TestSetupUploadTimelineDownloadAndDelete(t *testing.T) {
 		t.Fatalf("timeline has %d items", len(timeline.Items))
 	}
 	item := timeline.Items[0]
-	if item.FileName != "hello.txt" || item.Size != int64(len(content)) {
+	if item.Kind != "file" || item.FileName != "hello.txt" || item.Size != int64(len(content)) {
 		t.Fatalf("unexpected item: %+v", item)
 	}
 	digest := sha256.Sum256(content)
@@ -100,6 +108,52 @@ func TestSetupUploadTimelineDownloadAndDelete(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusPartialContent || readBody(t, response) != "hello" {
 		t.Fatalf("unexpected range response status %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	response = jsonRequest(t, client, http.MethodPost, httpServer.URL+"/api/notes", `{"conversation_id":"`+conversationID+`","text":"  记得在另一台设备上打开  "}`)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create note status = %d, body = %s", response.StatusCode, readBody(t, response))
+	}
+	var note struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&note); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if note.Kind != "text" || note.Text != "记得在另一台设备上打开" {
+		t.Fatalf("unexpected note: %+v", note)
+	}
+
+	response, err = client.Get(httpServer.URL + "/api/items?conversation_id=" + conversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mixedTimeline struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&mixedTimeline); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(mixedTimeline.Items) != 2 || mixedTimeline.Items[0].Kind != "text" || mixedTimeline.Items[0].Text != note.Text {
+		t.Fatalf("unexpected mixed timeline: %+v", mixedTimeline.Items)
+	}
+
+	request, _ = http.NewRequest(http.MethodDelete, httpServer.URL+"/api/items/"+note.ID, nil)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete note status = %d", response.StatusCode)
 	}
 	response.Body.Close()
 
@@ -196,6 +250,81 @@ func newTestServer(t *testing.T) (*App, *httptest.Server, *http.Client) {
 	client := server.Client()
 	client.Jar = jar
 	return app, server, client
+}
+
+func newTestClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Transport: server.Client().Transport, Jar: jar}
+}
+
+func registerDevice(t *testing.T, client *http.Client, baseURL, id, name, avatar string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"id": id, "name": name, "avatar": avatar})
+	response := jsonRequest(t, client, http.MethodPost, baseURL+"/api/devices/register", string(body))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("register device status = %d, body = %s", response.StatusCode, readBody(t, response))
+	}
+	response.Body.Close()
+}
+
+func pairDevice(t *testing.T, server *httptest.Server, inviter *http.Client, name, avatar string) (*http.Client, string) {
+	t.Helper()
+	response := jsonRequest(t, inviter, http.MethodPost, server.URL+"/api/pairing/invites", `{}`)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create invite status = %d, body = %s", response.StatusCode, readBody(t, response))
+	}
+	var invite struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&invite); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	device := newTestClient(t, server)
+	body, _ := json.Marshal(map[string]string{"token": invite.Token, "name": name, "avatar": avatar})
+	response = jsonRequest(t, device, http.MethodPost, server.URL+"/api/pairing/claim", string(body))
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("claim invite status = %d, body = %s", response.StatusCode, readBody(t, response))
+	}
+	var claim struct {
+		Device struct {
+			ID string `json:"id"`
+		} `json:"device"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&claim); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	return device, conversationWith(t, inviter, server.URL, claim.Device.ID)
+}
+
+func conversationWith(t *testing.T, client *http.Client, baseURL, deviceID string) string {
+	t.Helper()
+	response, err := client.Get(baseURL + "/api/conversations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var conversations struct {
+		Conversations []struct {
+			ID             string `json:"id"`
+			ConversationID string `json:"conversation_id"`
+		} `json:"conversations"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&conversations); err != nil {
+		t.Fatal(err)
+	}
+	for _, device := range conversations.Conversations {
+		if device.ID == deviceID {
+			return device.ConversationID
+		}
+	}
+	t.Fatalf("conversation with %s not found: %+v", deviceID, conversations.Conversations)
+	return ""
 }
 
 func getStatus(t *testing.T, client *http.Client, baseURL string) statusResponse {

@@ -20,6 +20,8 @@ func main() {
 		MaxUploadSize: envInt64("SELFSEND_MAX_UPLOAD_SIZE", 20<<30),
 		TrustProxy:    envBool("SELFSEND_TRUST_PROXY", false),
 		Version:       version,
+		CanonicalURL:  os.Getenv("SELFSEND_CANONICAL_URL"),
+		Discovery:     envBool("SELFSEND_DISCOVERY", true),
 	}
 
 	flag.StringVar(&config.ListenAddr, "listen", config.ListenAddr, "HTTP listen address")

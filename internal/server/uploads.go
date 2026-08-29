@@ -53,6 +53,19 @@ func (a *App) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "filename metadata is required")
 		return
 	}
+	conversationID := strings.TrimSpace(metadata["conversation"])
+	if !validDeviceID(conversationID) {
+		writeError(w, http.StatusBadRequest, "conversation metadata is required")
+		return
+	}
+	deviceID, _ := a.currentDeviceID(r)
+	if ok, err := a.store.ConversationMember(r.Context(), conversationID, deviceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read conversation")
+		return
+	} else if !ok {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
 	mimeType := strings.TrimSpace(metadata["filetype"])
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
@@ -74,7 +87,7 @@ func (a *App) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	file.Close()
-	upload := store.Upload{ID: id, FileName: fileName, MimeType: mimeType, TotalSize: totalSize, TempPath: tempPath, LastModified: lastModified}
+	upload := store.Upload{ID: id, ConversationID: conversationID, SenderDeviceID: deviceID, FileName: fileName, MimeType: mimeType, TotalSize: totalSize, TempPath: tempPath, LastModified: lastModified}
 	if err := a.store.CreateUpload(r.Context(), upload); err != nil {
 		os.Remove(tempPath)
 		writeError(w, http.StatusInternalServerError, "could not create upload")
@@ -101,6 +114,11 @@ func (a *App) handleUploadHead(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read upload")
+		return
+	}
+	deviceID, _ := a.currentDeviceID(r)
+	if upload.SenderDeviceID != deviceID {
+		writeError(w, http.StatusNotFound, "upload not found")
 		return
 	}
 	setTusHeaders(w, a.config.MaxUploadSize)
@@ -138,6 +156,11 @@ func (a *App) handleUploadPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read upload")
+		return
+	}
+	deviceID, _ := a.currentDeviceID(r)
+	if upload.SenderDeviceID != deviceID {
+		writeError(w, http.StatusNotFound, "upload not found")
 		return
 	}
 	if requestedOffset != upload.Offset {
@@ -197,6 +220,16 @@ func (a *App) handleUploadPatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDeleteUpload(w http.ResponseWriter, r *http.Request) {
+	upload, err := a.store.Upload(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "upload not found")
+		return
+	}
+	deviceID, _ := a.currentDeviceID(r)
+	if err != nil || upload.SenderDeviceID != deviceID {
+		writeError(w, http.StatusNotFound, "upload not found")
+		return
+	}
 	tempPath, err := a.store.DeleteUpload(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "upload not found")
@@ -232,7 +265,7 @@ func (a *App) finalizeUpload(ctx context.Context, upload store.Upload) error {
 	if err := os.Rename(upload.TempPath, blobPath); err != nil {
 		return err
 	}
-	if err := a.store.CompleteUpload(ctx, upload, hex.EncodeToString(hash.Sum(nil)), blobPath); err != nil {
+	if err := a.store.CompleteUpload(ctx, upload, hex.EncodeToString(hash.Sum(nil)), filepath.Join("blobs", upload.ID, "data")); err != nil {
 		_ = os.Rename(blobPath, upload.TempPath)
 		return err
 	}
@@ -250,7 +283,12 @@ func (a *App) handleDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read file")
 		return
 	}
-	file, err := os.Open(item.StoragePath)
+	deviceID, _ := a.currentDeviceID(r)
+	if ok, err := a.store.ConversationMember(r.Context(), item.ConversationID, deviceID); err != nil || !ok {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	file, err := os.Open(a.storagePath(item.StoragePath))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "file data is missing")
 		return

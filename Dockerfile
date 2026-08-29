@@ -22,7 +22,7 @@ COPY --from=build /out/selfsend /usr/local/bin/selfsend
 RUN mkdir /data && chown selfsend:selfsend /data
 USER selfsend
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 8080 38081/udp
 ENV SELFSEND_DATA_DIR=/data SELFSEND_LISTEN=:8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["/usr/local/bin/selfsend"]

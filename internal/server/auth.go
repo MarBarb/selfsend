@@ -47,7 +47,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "instance is already initialized")
 		return
 	}
-	if err := a.startSession(w, r); err != nil {
+	if err := a.startSession(w, r, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "instance initialized; please sign in")
 		return
 	}
@@ -69,7 +69,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "incorrect password")
 		return
 	}
-	if err := a.startSession(w, r); err != nil {
+	if err := a.startSession(w, r, ""); err != nil {
 		a.logger.Error("create session", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not start session")
 		return
@@ -88,7 +88,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *App) startSession(w http.ResponseWriter, r *http.Request) error {
+func (a *App) startSession(w http.ResponseWriter, r *http.Request, deviceID string) error {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return err
@@ -98,7 +98,7 @@ func (a *App) startSession(w http.ResponseWriter, r *http.Request) error {
 	if err := a.store.PurgeExpiredSessions(r.Context(), time.Now()); err != nil {
 		a.logger.Warn("purge expired sessions", "error", err)
 	}
-	if err := a.store.CreateSession(r.Context(), tokenHash(token), expiresAt); err != nil {
+	if err := a.store.CreateSession(r.Context(), tokenHash(token), deviceID, expiresAt); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -106,6 +106,18 @@ func (a *App) startSession(w http.ResponseWriter, r *http.Request) error {
 		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.secureRequest(r),
 	})
 	return nil
+}
+
+func (a *App) currentDeviceID(r *http.Request) (string, error) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return "", store.ErrNotFound
+	}
+	deviceID, err := a.store.SessionDevice(r.Context(), tokenHash(cookie.Value), time.Now())
+	if err != nil || deviceID == "" {
+		return "", store.ErrNotFound
+	}
+	return deviceID, nil
 }
 
 func (a *App) authenticated(r *http.Request) bool {
@@ -125,6 +137,16 @@ func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func (a *App) requireDevice(next http.HandlerFunc) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := a.currentDeviceID(r); err != nil {
+			writeError(w, http.StatusPreconditionRequired, "device registration required")
+			return
+		}
+		next(w, r)
+	})
 }
 
 func (a *App) secureRequest(r *http.Request) bool {
