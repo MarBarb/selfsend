@@ -207,6 +207,38 @@ func TestMigrationArchiveReceiverActivationAndClaim(t *testing.T) {
 	}
 }
 
+func TestValidateMigrationTarget(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		mode  string
+		want  string
+		ok    bool
+	}{
+		{name: "local IPv4", value: "http://192.168.1.20:8080/path", mode: "local", want: "http://192.168.1.20:8080", ok: true},
+		{name: "local hostname", value: "http://selfsend.local:8080", mode: "local", want: "http://selfsend.local:8080", ok: true},
+		{name: "public HTTPS", value: "https://1.1.1.1/receiver", mode: "online", want: "https://1.1.1.1", ok: true},
+		{name: "public HTTP rejected", value: "http://1.1.1.1", mode: "online", ok: false},
+		{name: "private online rejected", value: "https://192.168.1.20", mode: "online", ok: false},
+		{name: "public local rejected", value: "https://1.1.1.1", mode: "local", ok: false},
+		{name: "credentials rejected", value: "https://user:pass@1.1.1.1", mode: "online", ok: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := validateMigrationTarget(test.value, test.mode)
+			if test.ok && err != nil {
+				t.Fatalf("validateMigrationTarget() error = %v", err)
+			}
+			if !test.ok && err == nil {
+				t.Fatalf("validateMigrationTarget() = %q, want error", got)
+			}
+			if got != test.want {
+				t.Fatalf("validateMigrationTarget() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAnyRegisteredDeviceCanPrepareAndDownloadBackup(t *testing.T) {
 	app, server, client := newTestServer(t)
 	defer app.Close()

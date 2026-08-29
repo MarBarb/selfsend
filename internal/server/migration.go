@@ -407,6 +407,7 @@ func (a *App) handleStartMigration(w http.ResponseWriter, r *http.Request) {
 		TargetURL string `json:"target_url"`
 		Token     string `json:"token"`
 		Password  string `json:"password"`
+		Mode      string `json:"mode"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -418,9 +419,13 @@ func (a *App) handleStartMigration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "管理员密码不正确")
 		return
 	}
-	targetURL, err := validateLocalTarget(request.TargetURL)
+	targetURL, err := validateMigrationTarget(request.TargetURL, request.Mode)
 	if err != nil || request.Token == "" {
-		writeError(w, http.StatusBadRequest, "请输入有效的局域网迁移地址")
+		if request.Mode == "online" {
+			writeError(w, http.StatusBadRequest, "请输入可从公网访问的 HTTPS 迁移地址")
+		} else {
+			writeError(w, http.StatusBadRequest, "请输入有效的局域网迁移地址")
+		}
 		return
 	}
 	if !a.maintenanceMu.TryLock() {
@@ -1167,22 +1172,33 @@ func requestBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-func validateLocalTarget(value string) (string, error) {
+func validateMigrationTarget(value, mode string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
 		return "", errors.New("invalid target")
 	}
+	if mode == "online" && parsed.Scheme != "https" {
+		return "", errors.New("online target must use HTTPS")
+	}
 	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || strings.HasSuffix(host, ".local") {
+	if mode != "online" && (host == "localhost" || strings.HasSuffix(host, ".local")) {
 		return strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/"), nil
 	}
 	addresses, err := net.LookupIP(host)
 	if err != nil || len(addresses) == 0 {
 		return "", errors.New("could not resolve target")
 	}
-	for _, address := range addresses {
-		if !address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast() {
-			return "", errors.New("target must be on the local network")
+	if mode == "online" {
+		for _, address := range addresses {
+			if address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsUnspecified() || address.IsMulticast() {
+				return "", errors.New("online target must resolve to public addresses")
+			}
+		}
+	} else {
+		for _, address := range addresses {
+			if !address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast() {
+				return "", errors.New("target must be on the local network")
+			}
 		}
 	}
 	return strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/"), nil

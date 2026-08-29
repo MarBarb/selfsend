@@ -178,8 +178,8 @@ export const api = {
   deleteItem: (id: string) => request<void>(`/api/items/${id}`, { method: 'DELETE' }),
   server: () => request<ServerDetails>('/api/server'),
   discoverServers: () => request<{ servers: DiscoveredServer[] }>('/api/server/discovery'),
-  startMigration: (targetURL: string, token: string, password: string) => request<MigrationJob>('/api/server/migrations', {
-    method: 'POST', body: JSON.stringify({ target_url: targetURL, token, password }),
+  startMigration: (targetURL: string, token: string, password: string, mode: 'local' | 'online' = 'local') => request<MigrationJob>('/api/server/migrations', {
+    method: 'POST', body: JSON.stringify({ target_url: targetURL, token, password, mode }),
   }),
   migrationStatus: () => request<MigrationJob>('/api/server/migrations/current'),
   rollbackMigration: (password: string) => request<{ ok: boolean }>('/api/server/migrations/rollback', { method: 'POST', body: JSON.stringify({ password }) }),

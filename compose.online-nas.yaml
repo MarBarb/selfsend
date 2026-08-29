@@ -1,0 +1,17 @@
+services:
+  selfsend:
+    image: ghcr.io/marbarb/selfsend:${SELFSEND_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "38081:38081/udp"
+    volumes:
+      - ${SELFSEND_DATA_PATH:-./SelfSendData}:/data
+    environment:
+      SELFSEND_TRUST_PROXY: "true"
+      SELFSEND_DISCOVERY: "true"
+      SELFSEND_CANONICAL_URL: ${SELFSEND_PUBLIC_URL:-}
+      # 推荐首次打开网页后创建管理员密码。
+      # SELFSEND_ADMIN_PASSWORD: "replace-with-a-long-password"
+    security_opt:
+      - no-new-privileges:true

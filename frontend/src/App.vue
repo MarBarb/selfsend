@@ -27,8 +27,10 @@ import { api, ApiError, prepareBackup, restoreBackup, type Conversation, type De
 type ViewState = 'loading' | 'setup' | 'login' | 'pairing' | 'receiver' | 'moved' | 'app' | 'error'
 type AppScreen = 'chats' | 'chat' | 'me' | 'server'
 type UploadState = 'queued' | 'uploading' | 'done' | 'error'
-type MigrationScreen = 'destination' | 'local-target' | 'transfer' | 'nas-guide' | 'online'
+type MigrationScreen = 'destination' | 'local-target' | 'transfer' | 'nas-guide' | 'online' | 'online-nas' | 'online-nas-guide' | 'online-transfer'
 type LocalMigrationTarget = 'computer' | 'nas'
+type MigrationMode = 'local' | 'online'
+type OnlineNASBrand = 'zspace' | 'synology' | 'qnap' | 'fnos' | 'ugreen' | 'other'
 
 interface UploadTask {
   id: string
@@ -94,6 +96,9 @@ const serverLoading = ref(false)
 const migrationOpen = ref(false)
 const migrationScreen = ref<MigrationScreen>('destination')
 const localMigrationTarget = ref<LocalMigrationTarget>('computer')
+const migrationMode = ref<MigrationMode>('local')
+const onlineProvider = ref<'nas' | 'generic'>('generic')
+const onlineNASBrand = ref<OnlineNASBrand>('other')
 const migrationOffer = ref('')
 const migrationPassword = ref('')
 const migrationStarting = ref(false)
@@ -101,6 +106,8 @@ const migrationJob = ref<MigrationJob | null>(null)
 const discoveredServers = ref<DiscoveredServer[]>([])
 const discoveryLoading = ref(false)
 const nasCommandCopied = ref(false)
+const onlineNASStoragePath = ref('')
+const onlineNASCommandCopied = ref(false)
 const backupOpen = ref(false)
 const backupPassword = ref('')
 const backupCreating = ref(false)
@@ -114,6 +121,14 @@ let migrationTimer = 0
 let receiverTimer = 0
 
 const avatarPresets = ['我', '📱', '💻', '🖥️', '📂', '🟢', '🐼', '🐱']
+const onlineNASBrands: Array<{ id: OnlineNASBrand; name: string; description: string }> = [
+	{ id: 'zspace', name: '极空间', description: 'Docker 与厂商远程访问' },
+	{ id: 'synology', name: '群晖', description: 'Container Manager 与反向代理' },
+	{ id: 'qnap', name: '威联通', description: 'Container Station 与反向代理' },
+	{ id: 'fnos', name: '飞牛', description: 'Docker Compose 与公网访问' },
+	{ id: 'ugreen', name: '绿联', description: 'Docker 与公网访问' },
+	{ id: 'other', name: '其他 Docker NAS', description: '适用于通用 AMD64 或 ARM64 NAS' },
+]
 const totalLabel = computed(() => !status.value?.authenticated ? '' : `${status.value.item_count || 0} 个文件 · ${formatBytes(status.value.total_bytes || 0)}`)
 const currentDevice = computed(() => status.value?.device || null)
 const activeUploads = computed(() => uploads.value.filter((task) => task.conversationID === activeDevice.value?.conversation_id))
@@ -127,12 +142,28 @@ const migrationTitle = computed(() => {
 	if (migrationScreen.value === 'local-target') return '更换为本地服务器'
 	if (migrationScreen.value === 'transfer') return localMigrationTarget.value === 'nas' ? '迁移到 NAS' : '迁移到电脑'
 	if (migrationScreen.value === 'nas-guide') return '在 NAS 上启动 SelfSend'
+	if (migrationScreen.value === 'online-nas') return '选择 NAS 品牌'
+	if (migrationScreen.value === 'online-nas-guide') return `在${onlineNASBrandName.value}上部署`
+	if (migrationScreen.value === 'online-transfer') return '连接在线服务器'
 	if (migrationScreen.value === 'online') return '更换为在线服务器'
 	return '更换服务器'
 })
 const nasInstallCommand = `mkdir -p selfsend && cd selfsend
 curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.nas.yaml -o compose.yaml
 docker compose up -d`
+const onlineNASBrandName = computed(() => onlineNASBrands.find((brand) => brand.id === onlineNASBrand.value)?.name || 'NAS')
+const onlineNASRemoteAccessName = computed(() => {
+	if (onlineNASBrand.value === 'zspace') return '极空间远程访问'
+	if (onlineNASBrand.value === 'synology' || onlineNASBrand.value === 'qnap') return '反向代理或厂商远程访问'
+	return '反向代理或 NAS 提供的公网访问'
+})
+const onlineNASInstallCommand = computed(() => {
+	const storagePath = onlineNASStoragePath.value.trim() || '/请替换为NAS中的SelfSend文件夹路径'
+	return `mkdir -p selfsend && cd selfsend
+curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.online-nas.yaml -o compose.yaml
+printf 'SELFSEND_DATA_PATH=%s\\n' ${shellQuote(storagePath)} > .env
+docker compose up -d`
+})
 
 onMounted(() => {
 	wideLayoutQuery = window.matchMedia('(min-width: 900px)')
@@ -343,12 +374,17 @@ function openMigrationWizard() {
 	discoveredServers.value = []
 	migrationScreen.value = 'destination'
 	localMigrationTarget.value = 'computer'
+	migrationMode.value = 'local'
+	onlineProvider.value = 'generic'
+	onlineNASBrand.value = 'other'
 	nasCommandCopied.value = false
+	onlineNASCommandCopied.value = false
 	migrationOpen.value = true
 	window.clearInterval(migrationTimer)
 }
 
 function selectLocalMigration() {
+	migrationMode.value = 'local'
 	migrationScreen.value = 'local-target'
 }
 
@@ -373,9 +409,34 @@ function selectOnlineMigration() {
 	migrationScreen.value = 'online'
 }
 
+function selectOnlineNASMigration() {
+	migrationMode.value = 'online'
+	onlineProvider.value = 'nas'
+	migrationScreen.value = 'online-nas'
+}
+
+function selectOnlineNASBrand(brand: OnlineNASBrand) {
+	onlineNASBrand.value = brand
+	migrationScreen.value = 'online-nas-guide'
+	onlineNASCommandCopied.value = false
+}
+
+function continueOnlineNASMigration() {
+	migrationScreen.value = 'online-transfer'
+}
+
+function selectExistingOnlineMigration() {
+	migrationMode.value = 'online'
+	onlineProvider.value = 'generic'
+	migrationScreen.value = 'online-transfer'
+}
+
 function backMigrationScreen() {
 	if (migrationScreen.value === 'transfer' && localMigrationTarget.value === 'nas') migrationScreen.value = 'nas-guide'
 	else if (migrationScreen.value === 'transfer' || migrationScreen.value === 'nas-guide') migrationScreen.value = 'local-target'
+	else if (migrationScreen.value === 'online-transfer' && onlineProvider.value === 'nas') migrationScreen.value = 'online-nas-guide'
+	else if (migrationScreen.value === 'online-nas-guide') migrationScreen.value = 'online-nas'
+	else if (migrationScreen.value === 'online-transfer' || migrationScreen.value === 'online-nas') migrationScreen.value = 'online'
 	else migrationScreen.value = 'destination'
 }
 
@@ -383,6 +444,13 @@ async function copyNASCommand() {
 	await copyText(nasInstallCommand)
 	nasCommandCopied.value = true
 	window.setTimeout(() => { nasCommandCopied.value = false }, 1800)
+}
+
+async function copyOnlineNASCommand() {
+	if (!onlineNASStoragePath.value.trim()) return
+	await copyText(onlineNASInstallCommand.value)
+	onlineNASCommandCopied.value = true
+	window.setTimeout(() => { onlineNASCommandCopied.value = false }, 1800)
 }
 
 async function discoverMigrationTargets() {
@@ -401,7 +469,8 @@ async function startMigration() {
 	if (!token) return void window.alert('迁移链接缺少一次性凭证，请复制新服务器显示的完整链接')
 	migrationStarting.value = true
 	try {
-		migrationJob.value = await api.startMigration(parsed.origin, token, migrationPassword.value)
+		if (migrationMode.value === 'online' && parsed.protocol !== 'https:') return void window.alert('在线服务器必须使用 HTTPS 地址')
+		migrationJob.value = await api.startMigration(parsed.origin, token, migrationPassword.value, migrationMode.value)
 		migrationPassword.value = ''
 		startMigrationPolling()
 	} catch (error) { window.alert(error instanceof Error ? error.message : '无法开始迁移') }
@@ -462,6 +531,8 @@ async function exportBackup() {
 
 function readHashToken(name: string) { return new URLSearchParams(window.location.hash.replace(/^#/, '')).get(name) || '' }
 function clearHash() { window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`) }
+
+function shellQuote(value: string) { return `'${value.replace(/'/g, `'"'"'`)}'` }
 
 async function loadConversations() {
   try {
@@ -897,7 +968,7 @@ function taskID() { return globalThis.crypto?.randomUUID?.() || `${Date.now()}-$
 				<template v-if="!migrationJob">
 					<div v-if="migrationScreen === 'destination'" class="migration-choice-list">
 						<button class="migration-choice" @click="selectLocalMigration"><span class="migration-choice-icon local"><ServerStackIcon aria-hidden="true" /></span><span><strong>更换为本地服务器</strong><small>迁移到同一局域网中的电脑或 NAS</small></span><ChevronRightIcon aria-hidden="true" /></button>
-						<button class="migration-choice" @click="selectOnlineMigration"><span class="migration-choice-icon online"><CloudIcon aria-hidden="true" /></span><span><strong>更换为在线服务器 <em>规划中</em></strong><small>通过域名和 HTTPS 从外网访问</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice" @click="selectOnlineMigration"><span class="migration-choice-icon online"><CloudIcon aria-hidden="true" /></span><span><strong>更换为在线服务器</strong><small>使用成品 NAS 或已有 HTTPS 服务器</small></span><ChevronRightIcon aria-hidden="true" /></button>
 					</div>
 					<div v-else-if="migrationScreen === 'local-target'" class="migration-choice-list">
 						<button class="migration-choice" @click="selectComputerMigration"><span class="migration-choice-icon computer"><ComputerDesktopIcon aria-hidden="true" /></span><span><strong>电脑</strong><small>Windows、macOS 或 Linux 电脑</small></span><ChevronRightIcon aria-hidden="true" /></button>
@@ -910,17 +981,28 @@ function taskID() { return globalThis.crypto?.randomUUID?.() || `${Date.now()}-$
 						<div class="migration-warning">NAS 需要支持 64 位 Docker。数据默认保存在名为 selfsend-data 的 Docker 卷中，删除容器不会删除数据卷。</div>
 						<button class="primary-button migration-submit" @click="continueNASMigration">NAS 已启动，继续迁移</button>
 					</div>
-					<div v-else-if="migrationScreen === 'online'" class="online-server-placeholder">
-						<span><CloudIcon aria-hidden="true" /></span><strong>在线服务器尚未开放</strong><p>当前版本只允许迁移到局域网服务器。在线模式还需要 HTTPS、域名校验和更严格的安全策略，入口先保留在这里。</p>
-						<button class="secondary-button" @click="selectLocalMigration">改用本地服务器</button>
+					<div v-else-if="migrationScreen === 'online'" class="migration-choice-list">
+						<button class="migration-choice" @click="selectOnlineNASMigration"><span class="migration-choice-icon product-nas"><ServerStackIcon aria-hidden="true" /></span><span><strong>成品 NAS</strong><small>极空间、群晖、威联通、飞牛、绿联等</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice" @click="selectExistingOnlineMigration"><span class="migration-choice-icon online"><CloudIcon aria-hidden="true" /></span><span><strong>已有 HTTPS 服务器</strong><small>连接已经部署并配置 HTTPS 的 SelfSend</small></span><ChevronRightIcon aria-hidden="true" /></button>
+					</div>
+					<div v-else-if="migrationScreen === 'online-nas'" class="migration-choice-list nas-brand-list">
+						<button v-for="brand in onlineNASBrands" :key="brand.id" class="migration-choice nas-brand-choice" @click="selectOnlineNASBrand(brand.id)"><span class="migration-choice-icon nas-brand">{{ brand.name.slice(0, 1) }}</span><span><strong>{{ brand.name }}</strong><small>{{ brand.description }}</small></span><ChevronRightIcon aria-hidden="true" /></button>
+					</div>
+					<div v-else-if="migrationScreen === 'online-nas-guide'" class="nas-guide online-nas-guide">
+						<p class="nas-guide-intro">先在{{ onlineNASBrandName }}的文件管理器中创建专用 SelfSend 文件夹，再取得可供 Docker 使用的绝对路径。文件会直接保存在这个目录中。</p>
+						<label>SelfSend 存储路径<input v-model="onlineNASStoragePath" autocomplete="off" :placeholder="`粘贴${onlineNASBrandName}中的文件夹绝对路径`" /></label>
+						<div class="nas-command" :class="{ disabled: !onlineNASStoragePath.trim() }"><pre>{{ onlineNASInstallCommand }}</pre><button type="button" :disabled="!onlineNASStoragePath.trim()" @click="copyOnlineNASCommand"><CheckIcon v-if="onlineNASCommandCopied" aria-hidden="true" /><ClipboardDocumentIcon v-else aria-hidden="true" />{{ onlineNASCommandCopied ? '已复制' : '复制部署指令' }}</button></div>
+						<div class="nas-guide-steps"><p><span>1</span><strong>运行部署指令</strong><small>通过 SSH 或 NAS 的 Compose 功能执行，并确保容器可以读写所选目录。</small></p><p><span>2</span><strong>确认局域网访问</strong><small>打开 http://NAS局域网IP:8080，完成首次启动。</small></p><p><span>3</span><strong>开启{{ onlineNASRemoteAccessName }}</strong><small>为 SelfSend 网页服务建立公网入口，只使用 HTTPS 地址。</small></p><p><span>4</span><strong>从公网地址进入接收模式</strong><small>用公网地址打开新服务器，选择“从另一台服务器迁入”。</small></p></div>
+						<div class="migration-warning">不要直接开放 SMB、NFS、FTP 或 8080 端口到公网。SelfSend 在线迁移只接受 HTTPS 地址。</div>
+						<button class="primary-button migration-submit" :disabled="!onlineNASStoragePath.trim()" @click="continueOnlineNASMigration">已部署并开启 HTTPS</button>
 					</div>
 					<div v-else class="migration-transfer-form">
-						<div class="migration-steps"><span>1</span><p><strong>在新{{ localMigrationTarget === 'nas' ? ' NAS' : '电脑' }}启动一个空的 SelfSend</strong><small>首次打开时选择“从另一台服务器迁入”。</small></p></div>
-						<div class="migration-steps"><span>2</span><p><strong>复制新服务器显示的迁移链接</strong><small>两台服务器需要连接同一个局域网。</small></p></div>
-						<div v-if="discoveryLoading" class="discovery-note">正在寻找局域网中的新服务器…</div><div v-else-if="discoveredServers.length" class="discovery-note success">已发现 {{ discoveredServers.map((server) => server.name).join('、') }}</div>
-						<label>新服务器迁移链接<input v-model="migrationOffer" autocomplete="off" placeholder="http://192.168…/#receive=…" /></label>
+						<div class="migration-steps"><span>1</span><p><strong>{{ migrationMode === 'online' ? '用公网 HTTPS 地址打开新服务器' : `在新${localMigrationTarget === 'nas' ? ' NAS' : '电脑'}启动一个空的 SelfSend` }}</strong><small>首次打开时选择“从另一台服务器迁入”。</small></p></div>
+						<div class="migration-steps"><span>2</span><p><strong>复制新服务器显示的迁移链接</strong><small>{{ migrationMode === 'online' ? '链接必须以 https:// 开头，服务器将先验证目标。' : '两台服务器需要连接同一个局域网。' }}</small></p></div>
+						<div v-if="migrationMode === 'local' && discoveryLoading" class="discovery-note">正在寻找局域网中的新服务器…</div><div v-else-if="migrationMode === 'local' && discoveredServers.length" class="discovery-note success">已发现 {{ discoveredServers.map((server) => server.name).join('、') }}</div>
+						<label>新服务器迁移链接<input v-model="migrationOffer" autocomplete="off" :placeholder="migrationMode === 'online' ? 'https://你的公网地址/#receive=…' : 'http://192.168…/#receive=…'" /></label>
 						<label>当前管理员密码<input v-model="migrationPassword" type="password" autocomplete="current-password" placeholder="用于确认迁移" /></label>
-						<div class="migration-warning">迁移期间会暂停发送消息和上传文件。校验完成前，旧服务器不会删除任何数据。</div>
+						<div class="migration-warning">迁移期间会暂停发送消息和上传文件。校验完成前，旧服务器不会删除任何数据。在线迁移可能受 NAS 厂商中继速度和超时限制。</div>
 						<button class="primary-button migration-submit" :disabled="!migrationOffer.trim() || !migrationPassword || migrationStarting" @click="startMigration">{{ migrationStarting ? '正在检查…' : '开始迁移' }}</button>
 					</div>
 				</template>

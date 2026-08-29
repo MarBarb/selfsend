@@ -75,7 +75,15 @@ curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.nas.y
 docker compose up -d
 ```
 
-然后访问 `http://NAS局域网IP:8080`。NAS 配置使用名为 `selfsend-data` 的 Docker 命名卷，避免不同 NAS 系统上的宿主机目录权限差异。删除或重建容器不会删除该数据卷；不要执行 `docker compose down -v`，除非确定要删除全部 SelfSend 数据。
+然后访问 `http://NAS局域网IP:8080`。NAS 配置默认使用名为 `selfsend-data` 的 Docker 命名卷，避免不同 NAS 系统上的宿主机目录权限差异。删除或重建容器不会删除该数据卷；不要执行 `docker compose down -v`，除非确定要删除全部 SelfSend 数据。
+
+如果希望数据保存在 NAS 文件管理器中可见的专用目录，可以先创建目录，并在 `.env` 中写入它的绝对路径：
+
+```dotenv
+SELFSEND_DATA_PATH=/NAS上的实际路径/SelfSend
+```
+
+随后重新运行 `docker compose up -d`。该目录会映射为容器中的 `/data`，其中包含数据库、上传临时文件和全部聊天文件。这个目录由 SelfSend 管理，不要在服务运行时手动移动或删除内部文件。
 
 升级 NAS 部署：
 
@@ -87,17 +95,42 @@ docker compose up -d
 
 若 NAS 使用旧版 Compose，可以把命令中的 `docker compose` 替换为 `docker-compose`。局域网自动发现需要允许 UDP `38081`，无法使用广播时仍可手动复制迁移链接。
 
-## 更换本地服务器
+### 成品 NAS 在线部署
+
+极空间、群晖、威联通、飞牛、绿联以及其他支持 64 位 Docker 的 NAS 可以共用在线 NAS 配置，把文件直接保存在用户选择的 NAS 文件夹中：
+
+```bash
+mkdir -p selfsend && cd selfsend
+curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.online-nas.yaml -o compose.yaml
+printf 'SELFSEND_DATA_PATH=%s\n' '/NAS中复制的文件夹绝对路径' > .env
+docker compose up -d
+```
+
+先通过局域网地址确认 SelfSend 正常工作，再使用 NAS 厂商的远程访问功能或反向代理，为 `8080` 对应的网页服务配置公网入口。在线使用必须采用 HTTPS；不要把 SMB、NFS、FTP 或未加密的 `8080` 端口直接暴露到公网。
+
+若获得稳定的 HTTPS 地址，可以追加到 `.env` 后重建容器：
+
+```dotenv
+SELFSEND_PUBLIC_URL=https://你的稳定公网地址
+```
+
+在线 NAS 配置已经启用 `SELFSEND_TRUST_PROXY`。反向代理需要正确传递 `X-Forwarded-Proto: https`，否则安全 Cookie 和公网地址识别可能不正确。不同厂商的远程访问可能对上传大小、长连接或请求超时有限制，迁移大量数据前建议先上传和下载一个普通文件验证。
+
+品牌选择只影响安装提示，不影响 SelfSend 的数据格式或迁移协议。SelfSend 不调用任何 NAS 厂商私有 API，因此同一套镜像和 Compose 配置可以跨品牌使用。
+
+所选目录必须允许容器读写。若容器反复重启并提示 `permission denied`，请在 NAS 的容器管理界面为该目录授予读写权限，再重新启动 SelfSend；不要为了省事把整个存储池开放给容器。
+
+## 更换服务器
 
 “更换服务器”会迁移整个 SelfSend 实例，而不只是修改界面里的服务器名称。设备账号、私聊、群聊、文字、文件、管理员密码和实例标识都会保留。
 
 1. 在新电脑或 NAS 上使用一个新的空目录启动 SelfSend。
 2. 首次打开新服务器，选择“从另一台服务器迁入”，填写新服务器的设备名称。
 3. 复制新服务器显示的一次性迁移链接。
-4. 在任意已连接设备打开“我 → 服务器 → 更换服务器”，粘贴链接并输入管理员密码。
+4. 在任意已连接设备打开“我 → 服务器 → 更换服务器”，选择本地或在线服务器，粘贴链接并输入管理员密码。
 5. 等待新服务器完成校验和自动重启，然后页面会跳转到新地址。
 
-迁移仅允许连接局域网、环回或 `.local` 地址。传输使用 4 MiB 分块，可以从已经确认的偏移继续；即使局域网只使用 HTTP，迁移分块也会通过一次性凭证派生的 AES-GCM 密钥加密和认证。
+本地迁移仅允许连接局域网、环回或 `.local` 地址；在线迁移只允许解析到公网地址的 HTTPS 目标。传输使用 4 MiB 分块，可以从已经确认的偏移继续；迁移分块还会通过一次性凭证派生的 AES-GCM 密钥加密和认证。
 
 迁移时需要注意：
 
@@ -152,7 +185,7 @@ SelfSend 不会假装网页拥有原生 App 的全部后台权限：
 | `SELFSEND_MAX_UPLOAD_SIZE` | `21474836480` | 单文件上限，单位为字节（默认 20 GiB） |
 | `SELFSEND_TRUST_PROXY` | `false` | 信任反向代理的 HTTPS 标头并设置 Secure Cookie |
 | `SELFSEND_DISCOVERY` | `true` | 启用 UDP 38081 局域网服务器发现 |
-| `SELFSEND_CANONICAL_URL` | 空 | 可选的稳定局域网访问地址，用于迁移后的设备跳转 |
+| `SELFSEND_CANONICAL_URL` | 空 | 可选的稳定访问地址，用于迁移后的设备跳转 |
 
 命令行也支持：
 

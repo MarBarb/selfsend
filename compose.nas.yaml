@@ -6,7 +6,9 @@ services:
       - "8080:8080"
       - "38081:38081/udp"
     volumes:
-      - selfsend-data:/data
+      # 设置 SELFSEND_DATA_PATH 为 NAS 上的绝对路径即可使用可见的专用文件夹。
+      # 未设置时继续使用命名卷，兼容已有安装。
+      - ${SELFSEND_DATA_PATH:-selfsend-data}:/data
     environment:
       SELFSEND_TRUST_PROXY: "false"
       SELFSEND_DISCOVERY: "true"
