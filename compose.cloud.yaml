@@ -1,0 +1,18 @@
+services:
+  selfsend:
+    image: ghcr.io/marbarb/selfsend:${SELFSEND_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ${SELFSEND_DATA_PATH:-./SelfSendData}:/data
+    environment:
+      SELFSEND_TRUST_PROXY: "true"
+      SELFSEND_DISCOVERY: "false"
+      SELFSEND_DEPLOYMENT_TYPE: "cloud"
+      SELFSEND_PROVIDER: ${SELFSEND_PROVIDER:-generic}
+      SELFSEND_CANONICAL_URL: ${SELFSEND_PUBLIC_URL:-}
+      # 推荐首次打开网页后创建管理员密码。
+      # SELFSEND_ADMIN_PASSWORD: "replace-with-a-long-password"
+    security_opt:
+      - no-new-privileges:true

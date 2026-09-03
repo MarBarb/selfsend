@@ -31,8 +31,7 @@ func (a *App) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "this session already belongs to another device")
 		return
 	}
-	cookie, _ := r.Cookie(sessionCookieName)
-	if err := a.store.BindSessionDevice(r.Context(), tokenHash(cookie.Value), device.ID); err != nil {
+	if err := a.store.BindSessionDevice(r.Context(), tokenHash(a.sessionToken(r)), device.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not bind device session")
 		return
 	}

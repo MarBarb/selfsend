@@ -14,14 +14,16 @@ var version = "dev"
 
 func main() {
 	config := server.Config{
-		ListenAddr:    env("SELFSEND_LISTEN", ":8080"),
-		DataDir:       env("SELFSEND_DATA_DIR", "./data"),
-		AdminPassword: os.Getenv("SELFSEND_ADMIN_PASSWORD"),
-		MaxUploadSize: envInt64("SELFSEND_MAX_UPLOAD_SIZE", 20<<30),
-		TrustProxy:    envBool("SELFSEND_TRUST_PROXY", false),
-		Version:       version,
-		CanonicalURL:  os.Getenv("SELFSEND_CANONICAL_URL"),
-		Discovery:     envBool("SELFSEND_DISCOVERY", true),
+		ListenAddr:     env("SELFSEND_LISTEN", ":8080"),
+		DataDir:        env("SELFSEND_DATA_DIR", "./data"),
+		AdminPassword:  os.Getenv("SELFSEND_ADMIN_PASSWORD"),
+		MaxUploadSize:  envInt64("SELFSEND_MAX_UPLOAD_SIZE", 20<<30),
+		TrustProxy:     envBool("SELFSEND_TRUST_PROXY", false),
+		Version:        version,
+		CanonicalURL:   os.Getenv("SELFSEND_CANONICAL_URL"),
+		DeploymentType: os.Getenv("SELFSEND_DEPLOYMENT_TYPE"),
+		Provider:       os.Getenv("SELFSEND_PROVIDER"),
+		Discovery:      envBool("SELFSEND_DISCOVERY", true),
 	}
 
 	flag.StringVar(&config.ListenAddr, "listen", config.ListenAddr, "HTTP listen address")

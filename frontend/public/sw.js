@@ -1,4 +1,4 @@
-const cacheName = 'selfsend-shell-v5'
+const cacheName = 'selfsend-shell-v6'
 const shell = ['/', '/manifest.webmanifest', '/icon.svg']
 
 self.addEventListener('install', (event) => {

@@ -211,6 +211,47 @@ func TestAuthenticationAndOriginProtection(t *testing.T) {
 	response.Body.Close()
 }
 
+func TestSessionsRemainIndependentOnDifferentPorts(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	firstApp, err := New(Config{DataDir: t.TempDir(), Version: "test"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstApp.Close()
+	firstServer := httptest.NewServer(firstApp.Handler())
+	defer firstServer.Close()
+
+	secondApp, err := New(Config{DataDir: t.TempDir(), Version: "test"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondApp.Close()
+	secondServer := httptest.NewServer(secondApp.Handler())
+	defer secondServer.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+	for _, serverURL := range []string{firstServer.URL, secondServer.URL} {
+		response := jsonRequest(t, client, http.MethodPost, serverURL+"/api/setup", `{"password":"a-long-test-password"}`)
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("setup %s status = %d, body = %s", serverURL, response.StatusCode, readBody(t, response))
+		}
+		response.Body.Close()
+	}
+	if status := getStatus(t, client, firstServer.URL); !status.Authenticated {
+		t.Fatal("first server session was overwritten by second server")
+	}
+	if status := getStatus(t, client, secondServer.URL); !status.Authenticated {
+		t.Fatal("second server session is not authenticated")
+	}
+	if firstApp.sessionCookie == secondApp.sessionCookie {
+		t.Fatalf("session cookie names unexpectedly match: %s", firstApp.sessionCookie)
+	}
+}
+
 func TestWebRootDoesNotRedirect(t *testing.T) {
 	app, httpServer, client := newTestServer(t)
 	defer app.Close()

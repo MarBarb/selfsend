@@ -5,6 +5,7 @@ import {
   ChatBubbleOvalLeftEllipsisIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+	ChevronDownIcon,
   DocumentIcon,
   PhotoIcon,
   PlusCircleIcon,
@@ -19,17 +20,19 @@ import {
   ArrowPathIcon,
   ArchiveBoxArrowDownIcon,
   UserIcon,
+	TrashIcon,
   XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import QrcodeVue from 'qrcode.vue'
 import { api, ApiError, prepareBackup, restoreBackup, type Conversation, type Device, type DiscoveredServer, type FileItem, type InstanceStatus, type MigrationJob, type MigrationReceiver, type PairingInvite, type ServerDetails, type TimelineItem, uploadFile } from './api'
+import { carryServerDirectory, createPendingServer, importTransportedServerDirectory, rememberCurrentServer, saveServerDirectory, serverNavigationURL, type SavedServer, type ServerDeployment } from './servers'
 
 type ViewState = 'loading' | 'setup' | 'login' | 'pairing' | 'receiver' | 'moved' | 'app' | 'error'
 type AppScreen = 'chats' | 'chat' | 'me' | 'server'
 type UploadState = 'queued' | 'uploading' | 'done' | 'error'
-type MigrationScreen = 'destination' | 'local-target' | 'transfer' | 'nas-guide' | 'online' | 'online-nas' | 'online-nas-guide' | 'online-transfer'
-type LocalMigrationTarget = 'computer' | 'nas'
-type MigrationMode = 'local' | 'online'
+type MigrationScreen = 'destination' | 'local-platform' | 'cloud-guide' | 'nas-brand' | 'nas-guide' | 'transfer'
+type LocalPlatform = 'windows' | 'macos' | 'linux'
+type MigrationMode = 'local' | 'online' | 'hybrid'
 type OnlineNASBrand = 'zspace' | 'synology' | 'qnap' | 'fnos' | 'ugreen' | 'other'
 
 interface UploadTask {
@@ -78,6 +81,14 @@ const pairingAvatar = ref('')
 const pairingSubmitting = ref(false)
 const pairingDone = ref(false)
 const serverOnline = ref(true)
+const savedServers = ref<SavedServer[]>([])
+const serverMenuOpen = ref(false)
+const addServerOpen = ref(false)
+const manageServersOpen = ref(false)
+const addServerName = ref('')
+const addServerURL = ref('')
+const addServerDeployment = ref<ServerDeployment>('local')
+const addServerError = ref('')
 const headerMenuOpen = ref(false)
 const groupCreatorOpen = ref(false)
 const selectedGroupDeviceIDs = ref<string[]>([])
@@ -95,9 +106,9 @@ const serverDetails = ref<ServerDetails | null>(null)
 const serverLoading = ref(false)
 const migrationOpen = ref(false)
 const migrationScreen = ref<MigrationScreen>('destination')
-const localMigrationTarget = ref<LocalMigrationTarget>('computer')
+const localPlatform = ref<LocalPlatform>('macos')
 const migrationMode = ref<MigrationMode>('local')
-const onlineProvider = ref<'nas' | 'generic'>('generic')
+const selectedDeployment = ref<'local' | 'cloud' | 'nas'>('local')
 const onlineNASBrand = ref<OnlineNASBrand>('other')
 const migrationOffer = ref('')
 const migrationPassword = ref('')
@@ -105,9 +116,9 @@ const migrationStarting = ref(false)
 const migrationJob = ref<MigrationJob | null>(null)
 const discoveredServers = ref<DiscoveredServer[]>([])
 const discoveryLoading = ref(false)
-const nasCommandCopied = ref(false)
 const onlineNASStoragePath = ref('')
 const onlineNASCommandCopied = ref(false)
+const cloudCommandCopied = ref(false)
 const backupOpen = ref(false)
 const backupPassword = ref('')
 const backupCreating = ref(false)
@@ -122,9 +133,9 @@ let receiverTimer = 0
 
 const avatarPresets = ['我', '📱', '💻', '🖥️', '📂', '🟢', '🐼', '🐱']
 const onlineNASBrands: Array<{ id: OnlineNASBrand; name: string; description: string }> = [
-	{ id: 'zspace', name: '极空间', description: 'Docker 与厂商远程访问' },
-	{ id: 'synology', name: '群晖', description: 'Container Manager 与反向代理' },
-	{ id: 'qnap', name: '威联通', description: 'Container Station 与反向代理' },
+	{ id: 'zspace', name: '极空间', description: '厂商远程访问待兼容性验证' },
+	{ id: 'synology', name: '群晖', description: 'Docker 与用户配置的公网访问' },
+	{ id: 'qnap', name: '威联通', description: 'Docker 与用户配置的公网访问' },
 	{ id: 'fnos', name: '飞牛', description: 'Docker Compose 与公网访问' },
 	{ id: 'ugreen', name: '绿联', description: 'Docker 与公网访问' },
 	{ id: 'other', name: '其他 Docker NAS', description: '适用于通用 AMD64 或 ARM64 NAS' },
@@ -135,37 +146,46 @@ const activeUploads = computed(() => uploads.value.filter((task) => task.convers
 const displayItems = computed(() => [...items.value].reverse())
 const inviteURL = computed(() => invite.value ? `${window.location.origin}/#pair=${encodeURIComponent(invite.value.token)}` : '')
 const localOnlyOrigin = computed(() => ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname))
-const serverStatusLabel = computed(() => !serverOnline.value ? '本地服务器离线' : currentDevice.value?.is_server ? '这台设备是服务器' : '本地服务器在线')
+const serverStatusLabel = computed(() => !serverOnline.value ? `${deploymentLabel(status.value?.server?.deployment_type)}离线` : currentDevice.value?.is_server ? '这台设备是服务器' : `${deploymentLabel(status.value?.server?.deployment_type)}在线`)
+const currentServerProfile = computed(() => savedServers.value.find((server) => server.instanceId === status.value?.server?.instance_id || server.url === window.location.origin))
+const currentServerName = computed(() => currentServerProfile.value?.name || status.value?.server?.server_device_name || status.value?.server?.instance_name || '当前服务器')
+const orderedServers = computed(() => [...savedServers.value].sort((left, right) => {
+	const currentID = status.value?.server?.instance_id
+	if (left.instanceId === currentID) return -1
+	if (right.instanceId === currentID) return 1
+	return right.lastConnectedAt - left.lastConnectedAt
+}))
+const fallbackServers = computed(() => savedServers.value.filter((server) => server.url !== window.location.origin))
+const serverDeploymentLabel = computed(() => deploymentLabel(serverDetails.value?.server.deployment_type || status.value?.server?.deployment_type))
+const serverProviderLabel = computed(() => providerLabel(serverDetails.value?.server.provider || status.value?.server?.provider))
 const groupCandidates = computed(() => devices.value.filter((conversation) => conversation.kind === 'direct'))
 const migrationTitle = computed(() => {
-	if (migrationJob.value) return '正在更换服务器'
-	if (migrationScreen.value === 'local-target') return '更换为本地服务器'
-	if (migrationScreen.value === 'transfer') return localMigrationTarget.value === 'nas' ? '迁移到 NAS' : '迁移到电脑'
-	if (migrationScreen.value === 'nas-guide') return '在 NAS 上启动 SelfSend'
-	if (migrationScreen.value === 'online-nas') return '选择 NAS 品牌'
-	if (migrationScreen.value === 'online-nas-guide') return `在${onlineNASBrandName.value}上部署`
-	if (migrationScreen.value === 'online-transfer') return '连接在线服务器'
-	if (migrationScreen.value === 'online') return '更换为在线服务器'
-	return '更换服务器'
+	if (migrationJob.value) return '正在迁移服务器'
+	if (migrationScreen.value === 'local-platform') return '选择电脑系统'
+	if (migrationScreen.value === 'cloud-guide') return '部署云端服务器'
+	if (migrationScreen.value === 'nas-brand') return '选择 NAS 品牌'
+	if (migrationScreen.value === 'nas-guide') return `在${onlineNASBrandName.value}上部署`
+	if (migrationScreen.value === 'transfer') return `迁移到${deploymentLabel(selectedDeployment.value)}`
+	return '迁移服务器'
 })
-const nasInstallCommand = `mkdir -p selfsend && cd selfsend
-curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.nas.yaml -o compose.yaml
+const cloudInstallCommand = `mkdir -p selfsend && cd selfsend
+curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.cloud.yaml -o compose.yaml
 docker compose up -d`
 const onlineNASBrandName = computed(() => onlineNASBrands.find((brand) => brand.id === onlineNASBrand.value)?.name || 'NAS')
 const onlineNASRemoteAccessName = computed(() => {
-	if (onlineNASBrand.value === 'zspace') return '极空间远程访问'
-	if (onlineNASBrand.value === 'synology' || onlineNASBrand.value === 'qnap') return '反向代理或厂商远程访问'
-	return '反向代理或 NAS 提供的公网访问'
+	if (onlineNASBrand.value === 'zspace') return '极空间远程访问（待验证）'
+	return '自建反向代理或兼容的公网入口'
 })
 const onlineNASInstallCommand = computed(() => {
 	const storagePath = onlineNASStoragePath.value.trim() || '/请替换为NAS中的SelfSend文件夹路径'
 	return `mkdir -p selfsend && cd selfsend
 curl -fsSL https://raw.githubusercontent.com/MarBarb/selfsend/main/compose.online-nas.yaml -o compose.yaml
-printf 'SELFSEND_DATA_PATH=%s\\n' ${shellQuote(storagePath)} > .env
+printf 'SELFSEND_DATA_PATH=%s\\nSELFSEND_PROVIDER=%s\\n' ${shellQuote(storagePath)} ${shellQuote(onlineNASBrand.value)} > .env
 docker compose up -d`
 })
 
 onMounted(() => {
+	savedServers.value = importTransportedServerDirectory()
 	wideLayoutQuery = window.matchMedia('(min-width: 900px)')
 	wideLayout.value = wideLayoutQuery.matches
 	wideLayoutQuery.addEventListener('change', updateWideLayout)
@@ -207,6 +227,7 @@ async function bootstrap() {
 			}
 		}
     status.value = await api.status()
+		rememberLoadedServer()
 		serverOnline.value = true
 		pairingToken.value = readPairingToken()
 		if (pairingToken.value) {
@@ -237,6 +258,77 @@ async function checkServer() {
 }
 
 function markServerOffline() { serverOnline.value = false }
+
+function rememberLoadedServer() {
+	if (!status.value?.server) return
+	savedServers.value = rememberCurrentServer(savedServers.value, status.value.server)
+}
+
+function toggleServerMenu() {
+	headerMenuOpen.value = false
+	serverMenuOpen.value = !serverMenuOpen.value
+}
+
+function openAddServerDialog() {
+	serverMenuOpen.value = false
+	manageServersOpen.value = false
+	addServerName.value = ''
+	addServerURL.value = ''
+	addServerDeployment.value = 'local'
+	addServerError.value = ''
+	addServerOpen.value = true
+}
+
+function openServerManager() {
+	serverMenuOpen.value = false
+	manageServersOpen.value = true
+}
+
+function submitAddServer() {
+	addServerError.value = ''
+	try {
+		const server = createPendingServer(addServerName.value, addServerURL.value, addServerDeployment.value)
+		if (server.url === window.location.origin) throw new Error('这个地址就是当前服务器')
+		savedServers.value = saveServerDirectory([...savedServers.value, server])
+		addServerOpen.value = false
+		switchServer(server)
+	} catch (error) {
+		addServerError.value = error instanceof Error ? error.message : '无法保存服务器地址'
+	}
+}
+
+function switchServer(server: SavedServer) {
+	serverMenuOpen.value = false
+	manageServersOpen.value = false
+	if (isCurrentServer(server)) return
+	if (uploads.value.some((task) => task.state === 'queued' || task.state === 'uploading') && !window.confirm('仍有文件正在上传。现在切换会中断这些上传，是否继续？')) return
+	try {
+		window.location.assign(serverNavigationURL(server, savedServers.value))
+	} catch (error) {
+		window.alert(error instanceof Error ? error.message : '服务器地址无效')
+	}
+}
+
+function removeSavedServer(server: SavedServer) {
+	if (isCurrentServer(server)) return
+	if (!window.confirm(`从列表中移除“${server.name}”？服务器中的消息和文件不会被删除。`)) return
+	savedServers.value = saveServerDirectory(savedServers.value.filter((item) => item.instanceId !== server.instanceId))
+}
+
+function renameSavedServer(server: SavedServer) {
+	const name = window.prompt('服务器显示名称', server.name)?.trim()
+	if (!name || name.length > 60) return
+	savedServers.value = saveServerDirectory(savedServers.value.map((item) => item.instanceId === server.instanceId ? { ...item, name, customName: true } : item))
+}
+
+function isCurrentServer(server: SavedServer) {
+	return server.instanceId === status.value?.server?.instance_id || server.url === window.location.origin
+}
+
+function formatLastConnected(timestamp: number) {
+	if (!timestamp) return '尚未连接'
+	return `上次连接 ${new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))}`
+}
 
 async function submitSetup() {
   formError.value = ''
@@ -299,7 +391,7 @@ async function logout() {
   view.value = 'login'
 }
 
-async function refreshStatus() { status.value = await api.status() }
+async function refreshStatus() { status.value = await api.status(); rememberLoadedServer() }
 
 async function openServerSettings() {
 	screen.value = 'server'
@@ -373,31 +465,32 @@ function openMigrationWizard() {
 	migrationJob.value = null
 	discoveredServers.value = []
 	migrationScreen.value = 'destination'
-	localMigrationTarget.value = 'computer'
+	localPlatform.value = 'macos'
 	migrationMode.value = 'local'
-	onlineProvider.value = 'generic'
+	selectedDeployment.value = 'local'
 	onlineNASBrand.value = 'other'
-	nasCommandCopied.value = false
 	onlineNASCommandCopied.value = false
+	cloudCommandCopied.value = false
 	migrationOpen.value = true
 	window.clearInterval(migrationTimer)
 }
 
 function selectLocalMigration() {
 	migrationMode.value = 'local'
-	migrationScreen.value = 'local-target'
+	selectedDeployment.value = 'local'
+	migrationScreen.value = 'local-platform'
 }
 
-function selectComputerMigration() {
-	localMigrationTarget.value = 'computer'
+function selectLocalPlatform(platform: LocalPlatform) {
+	localPlatform.value = platform
 	migrationScreen.value = 'transfer'
 	void discoverMigrationTargets()
 }
 
 function selectNASMigration() {
-	localMigrationTarget.value = 'nas'
-	migrationScreen.value = 'nas-guide'
-	nasCommandCopied.value = false
+	migrationMode.value = 'hybrid'
+	selectedDeployment.value = 'nas'
+	migrationScreen.value = 'nas-brand'
 }
 
 function continueNASMigration() {
@@ -405,45 +498,28 @@ function continueNASMigration() {
 	void discoverMigrationTargets()
 }
 
-function selectOnlineMigration() {
-	migrationScreen.value = 'online'
-}
-
-function selectOnlineNASMigration() {
+function selectCloudMigration() {
 	migrationMode.value = 'online'
-	onlineProvider.value = 'nas'
-	migrationScreen.value = 'online-nas'
+	selectedDeployment.value = 'cloud'
+	migrationScreen.value = 'cloud-guide'
 }
 
 function selectOnlineNASBrand(brand: OnlineNASBrand) {
 	onlineNASBrand.value = brand
-	migrationScreen.value = 'online-nas-guide'
+	migrationScreen.value = 'nas-guide'
 	onlineNASCommandCopied.value = false
 }
 
-function continueOnlineNASMigration() {
-	migrationScreen.value = 'online-transfer'
-}
-
-function selectExistingOnlineMigration() {
-	migrationMode.value = 'online'
-	onlineProvider.value = 'generic'
-	migrationScreen.value = 'online-transfer'
+function continueCloudMigration() {
+	migrationScreen.value = 'transfer'
 }
 
 function backMigrationScreen() {
-	if (migrationScreen.value === 'transfer' && localMigrationTarget.value === 'nas') migrationScreen.value = 'nas-guide'
-	else if (migrationScreen.value === 'transfer' || migrationScreen.value === 'nas-guide') migrationScreen.value = 'local-target'
-	else if (migrationScreen.value === 'online-transfer' && onlineProvider.value === 'nas') migrationScreen.value = 'online-nas-guide'
-	else if (migrationScreen.value === 'online-nas-guide') migrationScreen.value = 'online-nas'
-	else if (migrationScreen.value === 'online-transfer' || migrationScreen.value === 'online-nas') migrationScreen.value = 'online'
+	if (migrationScreen.value === 'transfer' && selectedDeployment.value === 'local') migrationScreen.value = 'local-platform'
+	else if (migrationScreen.value === 'transfer' && selectedDeployment.value === 'cloud') migrationScreen.value = 'cloud-guide'
+	else if (migrationScreen.value === 'transfer' && selectedDeployment.value === 'nas') migrationScreen.value = 'nas-guide'
+	else if (migrationScreen.value === 'nas-guide') migrationScreen.value = 'nas-brand'
 	else migrationScreen.value = 'destination'
-}
-
-async function copyNASCommand() {
-	await copyText(nasInstallCommand)
-	nasCommandCopied.value = true
-	window.setTimeout(() => { nasCommandCopied.value = false }, 1800)
 }
 
 async function copyOnlineNASCommand() {
@@ -451,6 +527,12 @@ async function copyOnlineNASCommand() {
 	await copyText(onlineNASInstallCommand.value)
 	onlineNASCommandCopied.value = true
 	window.setTimeout(() => { onlineNASCommandCopied.value = false }, 1800)
+}
+
+async function copyCloudCommand() {
+	await copyText(cloudInstallCommand)
+	cloudCommandCopied.value = true
+	window.setTimeout(() => { cloudCommandCopied.value = false }, 1800)
 }
 
 async function discoverMigrationTargets() {
@@ -469,7 +551,7 @@ async function startMigration() {
 	if (!token) return void window.alert('迁移链接缺少一次性凭证，请复制新服务器显示的完整链接')
 	migrationStarting.value = true
 	try {
-		if (migrationMode.value === 'online' && parsed.protocol !== 'https:') return void window.alert('在线服务器必须使用 HTTPS 地址')
+		if (migrationMode.value === 'online' && parsed.protocol !== 'https:') return void window.alert('云端服务器必须使用 HTTPS 地址')
 		migrationJob.value = await api.startMigration(parsed.origin, token, migrationPassword.value, migrationMode.value)
 		migrationPassword.value = ''
 		startMigrationPolling()
@@ -491,10 +573,10 @@ function startMigrationPolling() {
 }
 
 async function moveToNewServer() {
-	try { window.location.assign((await api.createHandoff()).url) }
+	try { window.location.assign(carryServerDirectory((await api.createHandoff()).url, savedServers.value)) }
 	catch (error) {
 		const successor = status.value?.server?.successor_url
-		if (successor) window.location.assign(successor)
+		if (successor) window.location.assign(carryServerDirectory(successor, savedServers.value))
 		else window.alert(error instanceof Error ? error.message : '请使用迁移完成页面中的新服务器地址')
 	}
 }
@@ -533,6 +615,21 @@ function readHashToken(name: string) { return new URLSearchParams(window.locatio
 function clearHash() { window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`) }
 
 function shellQuote(value: string) { return `'${value.replace(/'/g, `'"'"'`)}'` }
+
+function deploymentLabel(value?: string) {
+	if (value === 'cloud') return '云端服务器'
+	if (value === 'nas') return 'NAS 服务器'
+	return '本地服务器'
+}
+
+function providerLabel(value?: string) {
+	const labels: Record<string, string> = { computer: '电脑', zspace: '极空间', synology: '群晖', qnap: '威联通', fnos: '飞牛', ugreen: '绿联', generic: '通用部署' }
+	return labels[value || ''] || value || '通用部署'
+}
+
+function platformLabel(value: LocalPlatform) {
+	return value === 'windows' ? 'Windows' : value === 'linux' ? 'Linux' : 'macOS'
+}
 
 async function loadConversations() {
   try {
@@ -907,16 +1004,16 @@ function taskID() { return globalThis.crypto?.randomUUID?.() || `${Date.now()}-$
 	</main>
 
 	<main v-else-if="view === 'receiver'" class="center-screen auth-background">
-		<section class="auth-card receiver-card"><div class="brand-mark"><ServerStackIcon aria-hidden="true" /></div><h1>等待旧服务器迁入</h1><p class="tagline">在旧服务器打开“我 → 服务器 → 更换服务器”。</p><p v-if="localOnlyOrigin" class="invite-warning receiver-warning">当前链接是 localhost，旧服务器无法访问。请改用这台新服务器的局域网 IP 打开页面后重新进入接收模式。</p><div v-if="receiverOfferURL" class="qr-frame receiver-qr"><QrcodeVue :value="receiverOfferURL" :size="196" level="M" /></div><button v-if="receiverOfferURL" class="copy-invite-button" :disabled="localOnlyOrigin" @click="copyReceiverOffer"><CheckIcon v-if="inviteCopied" aria-hidden="true" /><ClipboardDocumentIcon v-else aria-hidden="true" />{{ inviteCopied ? '已复制迁移链接' : '复制迁移链接' }}</button><div class="receiver-state"><strong>{{ receiverStatus?.state === 'uploading' ? '正在接收数据' : receiverStatus?.state === 'restarting' || receiverStatus?.state === 'applying' ? '正在启动新服务器' : receiverStatus?.state === 'error' ? '迁移失败' : '等待连接' }}</strong><span v-if="receiverStatus?.state === 'uploading'">{{ Math.round(receiverProgress * 100) }}%</span><span v-else-if="receiverStatus?.error" class="error-text">{{ receiverStatus.error }}</span></div><div v-if="receiverProgress > 0" class="receiver-progress"><i :style="{ width: `${receiverProgress * 100}%` }"></i></div><label class="restore-backup-button" :class="{ disabled: receiverUploading }"><ArchiveBoxArrowDownIcon aria-hidden="true" /><span>{{ receiverUploading ? '正在恢复备份…' : '或者从备份文件恢复' }}</span><input class="visually-hidden" type="file" accept=".tar,application/x-tar" :disabled="receiverUploading" @change="selectedBackup" /></label></section>
+		<section class="auth-card receiver-card"><div class="brand-mark"><ServerStackIcon aria-hidden="true" /></div><h1>等待旧服务器迁入</h1><p class="tagline">在旧服务器打开“我 → 服务器 → 迁移服务器”。</p><p v-if="localOnlyOrigin" class="invite-warning receiver-warning">当前链接是 localhost，旧服务器无法访问。请改用这台新服务器的局域网 IP 打开页面后重新进入接收模式。</p><div v-if="receiverOfferURL" class="qr-frame receiver-qr"><QrcodeVue :value="receiverOfferURL" :size="196" level="M" /></div><button v-if="receiverOfferURL" class="copy-invite-button" :disabled="localOnlyOrigin" @click="copyReceiverOffer"><CheckIcon v-if="inviteCopied" aria-hidden="true" /><ClipboardDocumentIcon v-else aria-hidden="true" />{{ inviteCopied ? '已复制迁移链接' : '复制迁移链接' }}</button><div class="receiver-state"><strong>{{ receiverStatus?.state === 'uploading' ? '正在接收数据' : receiverStatus?.state === 'restarting' || receiverStatus?.state === 'applying' ? '正在启动新服务器' : receiverStatus?.state === 'error' ? '迁移失败' : '等待连接' }}</strong><span v-if="receiverStatus?.state === 'uploading'">{{ Math.round(receiverProgress * 100) }}%</span><span v-else-if="receiverStatus?.error" class="error-text">{{ receiverStatus.error }}</span></div><div v-if="receiverProgress > 0" class="receiver-progress"><i :style="{ width: `${receiverProgress * 100}%` }"></i></div><label class="restore-backup-button" :class="{ disabled: receiverUploading }"><ArchiveBoxArrowDownIcon aria-hidden="true" /><span>{{ receiverUploading ? '正在恢复备份…' : '或者从备份文件恢复' }}</span><input class="visually-hidden" type="file" accept=".tar,application/x-tar" :disabled="receiverUploading" @change="selectedBackup" /></label></section>
 	</main>
 
 	<main v-else-if="view === 'moved'" class="center-screen moved-screen"><div class="brand-mark"><ArrowPathIcon aria-hidden="true" /></div><h1>SelfSend 已迁移</h1><p class="muted">这台旧服务器现在只保留一份只读副本。</p><button class="primary-button" @click="moveToNewServer">前往新服务器</button><button class="form-back-button moved-rollback" @click="openRollback">恢复这台旧服务器</button><div v-if="rollbackOpen" class="modal-backdrop"><form class="identity-modal" @submit.prevent="rollbackMigration"><div class="modal-heading"><h2>恢复旧服务器</h2><button type="button" aria-label="关闭" @click="rollbackOpen = false"><XMarkIcon aria-hidden="true" /></button></div><div class="migration-warning">只有确认新服务器没有继续接收新消息时才能恢复，否则会产生两份无法自动合并的数据。</div><label>管理员密码<input v-model="rollbackPassword" type="password" autocomplete="current-password" autofocus /></label><button class="primary-button" :disabled="!rollbackPassword">确认恢复旧服务器</button></form></div></main>
 
-  <main v-else-if="view === 'error'" class="center-screen"><div class="brand-mark error-mark">!</div><h1>无法连接服务器</h1><p class="muted">请确认 SelfSend 服务仍在运行，然后重试。</p><button class="secondary-button" @click="bootstrap">重新连接</button></main>
+  <main v-else-if="view === 'error'" class="center-screen"><div class="brand-mark error-mark">!</div><h1>无法连接服务器</h1><p class="muted">请确认 SelfSend 服务仍在运行，然后重试。</p><button class="secondary-button" @click="bootstrap">重新连接</button><div v-if="fallbackServers.length" class="offline-server-list"><span>或者切换到其他服务器</span><button v-for="server in fallbackServers" :key="server.instanceId" @click="switchServer(server)">{{ server.name }}<small>{{ deploymentLabel(server.deploymentType) }}</small></button></div></main>
 
 	<main v-else class="app-shell" :class="{ dragging, 'wide-layout': wideLayout }" @dragenter.prevent="dragging = screen === 'chat'" @dragover.prevent="dragging = screen === 'chat'" @dragleave.self.prevent="dragging = false" @drop.prevent="dropped">
 		<aside v-if="wideLayout || screen === 'chats'" class="messages-pane">
-			<header class="page-topbar"><div class="page-title-block"><h1>消息</h1><span class="server-status" :class="{ offline: !serverOnline }"><i aria-hidden="true"></i>{{ serverStatusLabel }}</span></div><div class="header-action"><button class="header-add-button" aria-label="打开操作菜单" :aria-expanded="headerMenuOpen" @click="headerMenuOpen = !headerMenuOpen"><PlusCircleIcon aria-hidden="true" /></button><div v-if="headerMenuOpen" class="header-menu"><button @click="openAddFriend"><DevicePhoneMobileIcon aria-hidden="true" /><span><strong>添加设备</strong><small>扫描二维码加入</small></span></button><button @click="openGroupCreator"><UserGroupIcon aria-hidden="true" /><span><strong>拉群</strong><small>选择设备创建群聊</small></span></button></div></div></header>
+			<header class="page-topbar"><div class="page-title-block"><h1>消息</h1><div class="server-switcher"><button v-if="serverMenuOpen" class="server-menu-scrim" aria-label="关闭服务器菜单" @click="serverMenuOpen = false"></button><button class="server-switch-trigger" :aria-expanded="serverMenuOpen" @click="toggleServerMenu"><span class="server-status" :class="{ offline: !serverOnline }"><i aria-hidden="true"></i><strong>{{ currentServerName }}</strong><ChevronDownIcon aria-hidden="true" /></span></button><div v-if="serverMenuOpen" class="server-switch-menu"><div class="server-switch-menu-title">切换服务器</div><button v-for="server in orderedServers" :key="server.instanceId" class="server-switch-option" :class="{ current: isCurrentServer(server) }" @click="switchServer(server)"><span class="server-kind-icon" :class="server.deploymentType"><ComputerDesktopIcon v-if="server.deploymentType === 'local'" aria-hidden="true" /><CloudIcon v-else-if="server.deploymentType === 'cloud'" aria-hidden="true" /><ServerStackIcon v-else aria-hidden="true" /></span><span><strong>{{ server.name }}</strong><small>{{ isCurrentServer(server) ? serverStatusLabel : formatLastConnected(server.lastConnectedAt) }}</small></span><CheckIcon v-if="isCurrentServer(server)" class="server-current-check" aria-hidden="true" /></button><div class="server-switch-actions"><button @click="openAddServerDialog"><PlusCircleIcon aria-hidden="true" />添加服务器</button><button @click="openServerManager">管理服务器</button></div></div></div></div><div class="header-action"><button class="header-add-button" aria-label="打开操作菜单" :aria-expanded="headerMenuOpen" @click="serverMenuOpen = false; headerMenuOpen = !headerMenuOpen"><PlusCircleIcon aria-hidden="true" /></button><div v-if="headerMenuOpen" class="header-menu"><button @click="openAddFriend"><DevicePhoneMobileIcon aria-hidden="true" /><span><strong>添加设备</strong><small>扫描二维码加入</small></span></button><button @click="openGroupCreator"><UserGroupIcon aria-hidden="true" /><span><strong>拉群</strong><small>选择设备创建群聊</small></span></button></div></div></header>
       <section class="conversation-list">
 				<div v-if="!devices.length" class="conversation-empty"><UserPlusIcon aria-hidden="true" /><strong>还没有其他设备</strong><button @click="openAddFriend">添加设备</button></div>
         <button v-for="device in devices" :key="device.id" class="conversation-row" :class="{ selected: screen === 'chat' && activeDevice?.conversation_id === device.conversation_id }" @click="openChat(device)">
@@ -939,7 +1036,7 @@ function taskID() { return globalThis.crypto?.randomUUID?.() || `${Date.now()}-$
 
 		<section v-else-if="screen === 'server'" class="server-pane">
 			<header class="chat-topbar"><button class="back-button" aria-label="返回我" @click="goToMe"><ChevronLeftIcon aria-hidden="true" /></button><div class="chat-title"><h1>服务器</h1></div><span></span></header>
-			<section class="server-page"><div v-if="serverLoading" class="server-loading">正在读取服务器信息…</div><template v-else-if="serverDetails"><div class="server-hero"><span class="server-hero-icon"><ServerStackIcon aria-hidden="true" /></span><div><strong>{{ serverDetails.server.server_device_name || 'SelfSend 服务器' }}</strong><span><i aria-hidden="true"></i>在线 · {{ currentDevice?.is_server ? '这台设备是服务器' : '当前连接的服务器' }}</span></div></div><div class="server-info-group"><div><span>地址</span><strong>{{ serverDetails.server.canonical_url }}</strong></div><div><span>版本</span><strong>{{ serverDetails.version }}</strong></div><div><span>文件存储</span><strong>{{ formatBytes(serverDetails.total_bytes) }}</strong></div><div><span>服务器标识</span><strong>{{ serverDetails.server.instance_id.slice(0, 8) }}</strong></div></div><div class="server-actions"><button class="primary-button" @click="openMigrationWizard"><ArrowPathIcon aria-hidden="true" />更换服务器</button><button class="server-secondary-button" @click="openBackupDialog"><ArchiveBoxArrowDownIcon aria-hidden="true" />导出备份</button></div></template></section>
+			<section class="server-page"><div v-if="serverLoading" class="server-loading">正在读取服务器信息…</div><template v-else-if="serverDetails"><div class="server-hero"><span class="server-hero-icon" :class="serverDetails.server.deployment_type"><ComputerDesktopIcon v-if="serverDetails.server.deployment_type === 'local'" aria-hidden="true" /><CloudIcon v-else-if="serverDetails.server.deployment_type === 'cloud'" aria-hidden="true" /><ServerStackIcon v-else aria-hidden="true" /></span><div><strong>{{ serverDetails.server.server_device_name || 'SelfSend 服务器' }}</strong><span><i aria-hidden="true"></i>在线 · {{ serverDeploymentLabel }}<em v-if="serverDetails.server.deployment_type === 'nas'">实验性</em></span></div></div><div class="server-info-group"><div><span>服务器类型</span><strong>{{ serverDeploymentLabel }}</strong></div><div><span>运行环境</span><strong>{{ serverProviderLabel }}</strong></div><div><span>访问地址</span><strong>{{ serverDetails.server.canonical_url }}</strong></div><div><span>版本</span><strong>{{ serverDetails.version }}</strong></div><div><span>文件存储</span><strong>{{ formatBytes(serverDetails.total_bytes) }}</strong></div><div><span>服务器标识</span><strong>{{ serverDetails.server.instance_id.slice(0, 8) }}</strong></div></div><div class="server-actions"><button class="primary-button" @click="openMigrationWizard"><ArrowPathIcon aria-hidden="true" />迁移服务器</button><button class="server-secondary-button" @click="openBackupDialog"><ArchiveBoxArrowDownIcon aria-hidden="true" />导出备份</button></div></template></section>
 		</section>
 
 		<section v-else-if="screen === 'chat'" class="chat-pane">
@@ -957,6 +1054,10 @@ function taskID() { return globalThis.crypto?.randomUUID?.() || `${Date.now()}-$
 
 		<section v-else-if="wideLayout" class="desktop-empty-pane"><ChatBubbleOvalLeftEllipsisIcon aria-hidden="true" /><span>选择一个聊天</span></section>
 
+		<div v-if="addServerOpen" class="modal-backdrop" @click.self="addServerOpen = false"><form class="identity-modal server-directory-modal" @submit.prevent="submitAddServer"><div class="modal-heading"><h2>添加服务器</h2><button type="button" aria-label="关闭" @click="addServerOpen = false"><XMarkIcon aria-hidden="true" /></button></div><p class="server-modal-intro">每台服务器的设备、消息和文件相互独立。保存后将前往该服务器登录。</p><div class="server-type-options"><button type="button" :class="{ selected: addServerDeployment === 'local' }" @click="addServerDeployment = 'local'"><ComputerDesktopIcon aria-hidden="true" /><strong>本地</strong></button><button type="button" :class="{ selected: addServerDeployment === 'cloud' }" @click="addServerDeployment = 'cloud'"><CloudIcon aria-hidden="true" /><strong>云端</strong></button><button type="button" :class="{ selected: addServerDeployment === 'nas' }" @click="addServerDeployment = 'nas'"><ServerStackIcon aria-hidden="true" /><strong>NAS</strong><small>实验性</small></button></div><label>显示名称（可选）<input v-model="addServerName" maxlength="60" autocomplete="off" :placeholder="deploymentLabel(addServerDeployment)" /></label><label>服务器地址<input v-model="addServerURL" type="url" inputmode="url" autocomplete="url" :placeholder="addServerDeployment === 'cloud' ? 'https://send.example.com' : 'http://192.168.1.20:8080'" autofocus /></label><p v-if="addServerError" class="form-error">{{ addServerError }}</p><div class="migration-warning">不会复制当前服务器的聊天记录，也不会保存目标服务器的密码。</div><button class="primary-button" :disabled="!addServerURL.trim()">保存并前往</button></form></div>
+
+		<div v-if="manageServersOpen" class="modal-backdrop" @click.self="manageServersOpen = false"><section class="identity-modal server-directory-modal"><div class="modal-heading"><h2>管理服务器</h2><button type="button" aria-label="关闭" @click="manageServersOpen = false"><XMarkIcon aria-hidden="true" /></button></div><div class="managed-server-list"><div v-for="server in orderedServers" :key="server.instanceId" class="managed-server-row"><span class="server-kind-icon" :class="server.deploymentType"><ComputerDesktopIcon v-if="server.deploymentType === 'local'" aria-hidden="true" /><CloudIcon v-else-if="server.deploymentType === 'cloud'" aria-hidden="true" /><ServerStackIcon v-else aria-hidden="true" /></span><span class="managed-server-copy"><strong>{{ server.name }}</strong><small>{{ server.url }}</small></span><button type="button" class="managed-server-rename" @click="renameSavedServer(server)">改名</button><button v-if="!isCurrentServer(server)" type="button" class="managed-server-remove" aria-label="移除服务器" @click="removeSavedServer(server)"><TrashIcon aria-hidden="true" /></button><span v-else class="managed-server-current">当前</span></div></div><button class="primary-button" @click="openAddServerDialog"><PlusCircleIcon aria-hidden="true" />添加服务器</button></section></div>
+
 		<div v-if="migrationOpen" class="modal-backdrop" @click.self="migrationJob?.state !== 'running' && (migrationOpen = false)">
 			<section class="identity-modal migration-modal">
 				<div class="modal-heading migration-modal-heading">
@@ -967,42 +1068,40 @@ function taskID() { return globalThis.crypto?.randomUUID?.() || `${Date.now()}-$
 				</div>
 				<template v-if="!migrationJob">
 					<div v-if="migrationScreen === 'destination'" class="migration-choice-list">
-						<button class="migration-choice" @click="selectLocalMigration"><span class="migration-choice-icon local"><ServerStackIcon aria-hidden="true" /></span><span><strong>更换为本地服务器</strong><small>迁移到同一局域网中的电脑或 NAS</small></span><ChevronRightIcon aria-hidden="true" /></button>
-						<button class="migration-choice" @click="selectOnlineMigration"><span class="migration-choice-icon online"><CloudIcon aria-hidden="true" /></span><span><strong>更换为在线服务器</strong><small>使用成品 NAS 或已有 HTTPS 服务器</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice" @click="selectLocalMigration"><span class="migration-choice-icon local"><ComputerDesktopIcon aria-hidden="true" /></span><span><strong>本地服务器</strong><small>使用 Windows、macOS 或 Linux 电脑</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice" @click="selectCloudMigration"><span class="migration-choice-icon online"><CloudIcon aria-hidden="true" /></span><span><strong>云端服务器</strong><small>部署到自己购买的云服务器</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice experimental-choice" @click="selectNASMigration"><span class="migration-choice-icon product-nas"><ServerStackIcon aria-hidden="true" /></span><span><strong>NAS 服务器 <em>实验性</em></strong><small>由 NAS 提供存储，并尝试使用厂商远程访问</small></span><ChevronRightIcon aria-hidden="true" /></button>
 					</div>
-					<div v-else-if="migrationScreen === 'local-target'" class="migration-choice-list">
-						<button class="migration-choice" @click="selectComputerMigration"><span class="migration-choice-icon computer"><ComputerDesktopIcon aria-hidden="true" /></span><span><strong>电脑</strong><small>Windows、macOS 或 Linux 电脑</small></span><ChevronRightIcon aria-hidden="true" /></button>
-						<button class="migration-choice" @click="selectNASMigration"><span class="migration-choice-icon nas"><ServerStackIcon aria-hidden="true" /></span><span><strong>NAS</strong><small>群晖、威联通及其他 Docker NAS</small></span><ChevronRightIcon aria-hidden="true" /></button>
+					<div v-else-if="migrationScreen === 'local-platform'" class="migration-choice-list">
+						<button class="migration-choice" @click="selectLocalPlatform('windows')"><span class="migration-choice-icon computer">Win</span><span><strong>Windows</strong><small>在 Windows 电脑上运行 Docker</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice" @click="selectLocalPlatform('macos')"><span class="migration-choice-icon computer">Mac</span><span><strong>macOS</strong><small>在 Mac 上运行 Docker Desktop</small></span><ChevronRightIcon aria-hidden="true" /></button>
+						<button class="migration-choice" @click="selectLocalPlatform('linux')"><span class="migration-choice-icon computer">Linux</span><span><strong>Linux</strong><small>在局域网 Linux 电脑上运行 Docker</small></span><ChevronRightIcon aria-hidden="true" /></button>
 					</div>
-					<div v-else-if="migrationScreen === 'nas-guide'" class="nas-guide">
-						<p class="nas-guide-intro">先在 NAS 上安装 Docker 或 Container Manager，然后通过 SSH 运行以下命令。</p>
-						<div class="nas-command"><pre>{{ nasInstallCommand }}</pre><button type="button" @click="copyNASCommand"><CheckIcon v-if="nasCommandCopied" aria-hidden="true" /><ClipboardDocumentIcon v-else aria-hidden="true" />{{ nasCommandCopied ? '已复制' : '复制指令' }}</button></div>
-						<div class="nas-guide-steps"><p><span>1</span><strong>等待容器启动</strong><small>首次运行会从 GitHub 拉取适合 NAS 架构的镜像。</small></p><p><span>2</span><strong>打开 NAS 地址</strong><small>在浏览器访问 http://NAS局域网IP:8080。</small></p><p><span>3</span><strong>进入接收模式</strong><small>选择“从另一台服务器迁入”，复制页面生成的迁移链接。</small></p></div>
-						<div class="migration-warning">NAS 需要支持 64 位 Docker。数据默认保存在名为 selfsend-data 的 Docker 卷中，删除容器不会删除数据卷。</div>
-						<button class="primary-button migration-submit" @click="continueNASMigration">NAS 已启动，继续迁移</button>
+					<div v-else-if="migrationScreen === 'cloud-guide'" class="nas-guide cloud-guide">
+						<p class="nas-guide-intro">在自己的云服务器上运行 SelfSend，并通过域名和反向代理提供 HTTPS。SelfSend 不会替你购买或托管服务器。</p>
+						<div class="nas-command"><pre>{{ cloudInstallCommand }}</pre><button type="button" @click="copyCloudCommand"><CheckIcon v-if="cloudCommandCopied" aria-hidden="true" /><ClipboardDocumentIcon v-else aria-hidden="true" />{{ cloudCommandCopied ? '已复制' : '复制部署指令' }}</button></div>
+						<div class="nas-guide-steps"><p><span>1</span><strong>启动容器</strong><small>配置文件只将 8080 绑定到服务器本机，避免直接暴露端口。</small></p><p><span>2</span><strong>配置域名和 HTTPS</strong><small>使用 Caddy、Nginx 或云厂商网关反向代理到 127.0.0.1:8080。</small></p><p><span>3</span><strong>从公网地址进入接收模式</strong><small>迁移链接必须以 https:// 开头。</small></p></div>
+						<div class="migration-warning">云服务器的费用、安全更新、域名、证书和备份由部署者负责。</div>
+						<button class="primary-button migration-submit" @click="continueCloudMigration">云服务器已准备好</button>
 					</div>
-					<div v-else-if="migrationScreen === 'online'" class="migration-choice-list">
-						<button class="migration-choice" @click="selectOnlineNASMigration"><span class="migration-choice-icon product-nas"><ServerStackIcon aria-hidden="true" /></span><span><strong>成品 NAS</strong><small>极空间、群晖、威联通、飞牛、绿联等</small></span><ChevronRightIcon aria-hidden="true" /></button>
-						<button class="migration-choice" @click="selectExistingOnlineMigration"><span class="migration-choice-icon online"><CloudIcon aria-hidden="true" /></span><span><strong>已有 HTTPS 服务器</strong><small>连接已经部署并配置 HTTPS 的 SelfSend</small></span><ChevronRightIcon aria-hidden="true" /></button>
-					</div>
-					<div v-else-if="migrationScreen === 'online-nas'" class="migration-choice-list nas-brand-list">
+					<div v-else-if="migrationScreen === 'nas-brand'" class="migration-choice-list nas-brand-list">
 						<button v-for="brand in onlineNASBrands" :key="brand.id" class="migration-choice nas-brand-choice" @click="selectOnlineNASBrand(brand.id)"><span class="migration-choice-icon nas-brand">{{ brand.name.slice(0, 1) }}</span><span><strong>{{ brand.name }}</strong><small>{{ brand.description }}</small></span><ChevronRightIcon aria-hidden="true" /></button>
 					</div>
-					<div v-else-if="migrationScreen === 'online-nas-guide'" class="nas-guide online-nas-guide">
+					<div v-else-if="migrationScreen === 'nas-guide'" class="nas-guide online-nas-guide">
 						<p class="nas-guide-intro">先在{{ onlineNASBrandName }}的文件管理器中创建专用 SelfSend 文件夹，再取得可供 Docker 使用的绝对路径。文件会直接保存在这个目录中。</p>
 						<label>SelfSend 存储路径<input v-model="onlineNASStoragePath" autocomplete="off" :placeholder="`粘贴${onlineNASBrandName}中的文件夹绝对路径`" /></label>
 						<div class="nas-command" :class="{ disabled: !onlineNASStoragePath.trim() }"><pre>{{ onlineNASInstallCommand }}</pre><button type="button" :disabled="!onlineNASStoragePath.trim()" @click="copyOnlineNASCommand"><CheckIcon v-if="onlineNASCommandCopied" aria-hidden="true" /><ClipboardDocumentIcon v-else aria-hidden="true" />{{ onlineNASCommandCopied ? '已复制' : '复制部署指令' }}</button></div>
-						<div class="nas-guide-steps"><p><span>1</span><strong>运行部署指令</strong><small>通过 SSH 或 NAS 的 Compose 功能执行，并确保容器可以读写所选目录。</small></p><p><span>2</span><strong>确认局域网访问</strong><small>打开 http://NAS局域网IP:8080，完成首次启动。</small></p><p><span>3</span><strong>开启{{ onlineNASRemoteAccessName }}</strong><small>为 SelfSend 网页服务建立公网入口，只使用 HTTPS 地址。</small></p><p><span>4</span><strong>从公网地址进入接收模式</strong><small>用公网地址打开新服务器，选择“从另一台服务器迁入”。</small></p></div>
-						<div class="migration-warning">不要直接开放 SMB、NFS、FTP 或 8080 端口到公网。SelfSend 在线迁移只接受 HTTPS 地址。</div>
-						<button class="primary-button migration-submit" :disabled="!onlineNASStoragePath.trim()" @click="continueOnlineNASMigration">已部署并开启 HTTPS</button>
+						<div class="nas-guide-steps"><p><span>1</span><strong>运行部署指令</strong><small>确保容器可以读写所选目录。</small></p><p><span>2</span><strong>优先通过局域网迁移</strong><small>打开 http://NAS局域网IP:8080，进入接收模式。</small></p><p><span>3</span><strong>可选：开启{{ onlineNASRemoteAccessName }}</strong><small>只有兼容性检测通过后，才使用厂商公网入口。</small></p></div>
+						<div class="migration-warning">实验性功能：不同 NAS 不一定能把远程访问能力转交给第三方 Docker 网页。SelfSend 不承诺自动双网切换。</div>
+						<button class="primary-button migration-submit" :disabled="!onlineNASStoragePath.trim()" @click="continueNASMigration">NAS 已准备好</button>
 					</div>
 					<div v-else class="migration-transfer-form">
-						<div class="migration-steps"><span>1</span><p><strong>{{ migrationMode === 'online' ? '用公网 HTTPS 地址打开新服务器' : `在新${localMigrationTarget === 'nas' ? ' NAS' : '电脑'}启动一个空的 SelfSend` }}</strong><small>首次打开时选择“从另一台服务器迁入”。</small></p></div>
-						<div class="migration-steps"><span>2</span><p><strong>复制新服务器显示的迁移链接</strong><small>{{ migrationMode === 'online' ? '链接必须以 https:// 开头，服务器将先验证目标。' : '两台服务器需要连接同一个局域网。' }}</small></p></div>
-						<div v-if="migrationMode === 'local' && discoveryLoading" class="discovery-note">正在寻找局域网中的新服务器…</div><div v-else-if="migrationMode === 'local' && discoveredServers.length" class="discovery-note success">已发现 {{ discoveredServers.map((server) => server.name).join('、') }}</div>
-						<label>新服务器迁移链接<input v-model="migrationOffer" autocomplete="off" :placeholder="migrationMode === 'online' ? 'https://你的公网地址/#receive=…' : 'http://192.168…/#receive=…'" /></label>
+						<div class="migration-steps"><span>1</span><p><strong>{{ selectedDeployment === 'cloud' ? '用公网 HTTPS 地址打开云服务器' : selectedDeployment === 'nas' ? '用局域网地址打开 NAS 上的 SelfSend' : `在新的 ${platformLabel(localPlatform)} 电脑上启动 SelfSend` }}</strong><small>首次打开时选择“从另一台服务器迁入”。</small></p></div>
+						<div class="migration-steps"><span>2</span><p><strong>复制新服务器显示的迁移链接</strong><small>{{ selectedDeployment === 'cloud' ? '云端链接必须以 https:// 开头。' : selectedDeployment === 'nas' ? '优先使用局域网链接，也允许已验证的公网 HTTPS 链接。' : '两台电脑需要连接同一个局域网。' }}</small></p></div>
+						<div v-if="migrationMode !== 'online' && discoveryLoading" class="discovery-note">正在寻找局域网中的新服务器…</div><div v-else-if="migrationMode !== 'online' && discoveredServers.length" class="discovery-note success">已发现 {{ discoveredServers.map((server) => server.name).join('、') }}</div>
+						<label>新服务器迁移链接<input v-model="migrationOffer" autocomplete="off" :placeholder="selectedDeployment === 'cloud' ? 'https://你的域名/#receive=…' : 'http://192.168…/#receive=…'" /></label>
 						<label>当前管理员密码<input v-model="migrationPassword" type="password" autocomplete="current-password" placeholder="用于确认迁移" /></label>
-						<div class="migration-warning">迁移期间会暂停发送消息和上传文件。校验完成前，旧服务器不会删除任何数据。在线迁移可能受 NAS 厂商中继速度和超时限制。</div>
+						<div class="migration-warning">迁移期间会暂停发送消息和上传文件。校验完成前，旧服务器不会删除任何数据。</div>
 						<button class="primary-button migration-submit" :disabled="!migrationOffer.trim() || !migrationPassword || migrationStarting" @click="startMigration">{{ migrationStarting ? '正在检查…' : '开始迁移' }}</button>
 					</div>
 				</template>

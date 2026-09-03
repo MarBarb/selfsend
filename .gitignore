@@ -2,6 +2,15 @@
 .idea/
 .vscode/
 frontend/node_modules/
+android/**/.gradle/
+android/**/build/
+android/**/local.properties
+ios/**/DerivedData/
+ios/**/xcuserdata/
+*.xcuserstate
+windows/SelfSend/node_modules/
+windows/SelfSend/dist/
+windows/SelfSend/src-tauri/target/
 data/
 /dist/
 *.db

@@ -17,6 +17,8 @@ export interface ServerIdentity {
   successor_url?: string
   server_device_id?: string
   server_device_name?: string
+  deployment_type: 'local' | 'cloud' | 'nas'
+  provider?: string
   migration_epoch: number
 }
 
@@ -178,7 +180,7 @@ export const api = {
   deleteItem: (id: string) => request<void>(`/api/items/${id}`, { method: 'DELETE' }),
   server: () => request<ServerDetails>('/api/server'),
   discoverServers: () => request<{ servers: DiscoveredServer[] }>('/api/server/discovery'),
-  startMigration: (targetURL: string, token: string, password: string, mode: 'local' | 'online' = 'local') => request<MigrationJob>('/api/server/migrations', {
+  startMigration: (targetURL: string, token: string, password: string, mode: 'local' | 'online' | 'hybrid' = 'local') => request<MigrationJob>('/api/server/migrations', {
     method: 'POST', body: JSON.stringify({ target_url: targetURL, token, password, mode }),
   }),
   migrationStatus: () => request<MigrationJob>('/api/server/migrations/current'),

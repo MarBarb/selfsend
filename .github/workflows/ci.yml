@@ -42,6 +42,35 @@ jobs:
       - name: Build
         run: go build ./cmd/selfsend
 
+  windows-client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: windows/SelfSend/package-lock.json
+      - name: Install Rust formatter
+        run: rustup component add rustfmt
+      - name: Install Windows client dependencies
+        working-directory: windows/SelfSend
+        run: npm ci
+      - name: Check Rust formatting
+        working-directory: windows/SelfSend/src-tauri
+        run: cargo fmt --check
+      - name: Lint and test Windows client core
+        working-directory: windows/SelfSend/src-tauri
+        run: cargo clippy --all-targets -- -D warnings && cargo test
+      - name: Build Windows installer
+        working-directory: windows/SelfSend
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selfsend-windows-${{ github.sha }}
+          path: windows/SelfSend/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
   publish-container:
     if: github.event_name == 'push'
     needs: check

@@ -59,6 +59,8 @@ type receiverState struct {
 	Offset         int64  `json:"offset,omitempty"`
 	InstanceID     string `json:"instance_id,omitempty"`
 	HostDeviceID   string `json:"host_device_id,omitempty"`
+	DeploymentType string `json:"deployment_type,omitempty"`
+	Provider       string `json:"provider,omitempty"`
 	Error          string `json:"error,omitempty"`
 }
 
@@ -223,7 +225,13 @@ func (a *App) handleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 	state := receiverState{
 		ID: id, TokenHash: tokenDigest(token), State: "waiting", BaseURL: requestBaseURL(r), HostName: request.Name,
-		HostAvatar: request.Avatar, ExpiresAt: time.Now().Add(30 * time.Minute).Unix(),
+		HostAvatar: request.Avatar, DeploymentType: a.config.DeploymentType, Provider: a.config.Provider,
+		ExpiresAt: time.Now().Add(30 * time.Minute).Unix(),
+	}
+	if state.DeploymentType == "" {
+		if info, infoErr := a.store.ServerInfo(r.Context()); infoErr == nil {
+			state.DeploymentType, state.Provider = info.DeploymentType, info.Provider
+		}
 	}
 	if err := saveReceiver(a.config.DataDir, state); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save migration receiver")
@@ -423,6 +431,8 @@ func (a *App) handleStartMigration(w http.ResponseWriter, r *http.Request) {
 	if err != nil || request.Token == "" {
 		if request.Mode == "online" {
 			writeError(w, http.StatusBadRequest, "请输入可从公网访问的 HTTPS 迁移地址")
+		} else if request.Mode == "hybrid" {
+			writeError(w, http.StatusBadRequest, "请输入 NAS 的局域网迁移地址或公网 HTTPS 迁移地址")
 		} else {
 			writeError(w, http.StatusBadRequest, "请输入有效的局域网迁移地址")
 		}
@@ -970,7 +980,7 @@ func applyPendingMigration(dataDir string, logger *slog.Logger) error {
 	return nil
 }
 
-func finishPendingMigration(dataDir string, db *store.Store, canonicalURL string) error {
+func finishPendingMigration(dataDir string, db *store.Store, canonicalURL, deploymentType, provider string) error {
 	state, err := loadReceiver(dataDir)
 	if err != nil || state.State != "applying" {
 		return nil
@@ -978,7 +988,10 @@ func finishPendingMigration(dataDir string, db *store.Store, canonicalURL string
 	if canonicalURL == "" {
 		canonicalURL = state.BaseURL
 	}
-	device, err := db.ActivateMigratedServer(context.Background(), state.HostName, state.HostAvatar, canonicalURL)
+	if deploymentType == "" {
+		deploymentType, provider = state.DeploymentType, state.Provider
+	}
+	device, err := db.ActivateMigratedServer(context.Background(), state.HostName, state.HostAvatar, canonicalURL, deploymentType, provider)
 	if err != nil {
 		return err
 	}
@@ -1188,18 +1201,28 @@ func validateMigrationTarget(value, mode string) (string, error) {
 	if err != nil || len(addresses) == 0 {
 		return "", errors.New("could not resolve target")
 	}
-	if mode == "online" {
-		for _, address := range addresses {
-			if address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsUnspecified() || address.IsMulticast() {
-				return "", errors.New("online target must resolve to public addresses")
-			}
+	hasLocal, hasPublic := false, false
+	for _, address := range addresses {
+		if address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+			hasLocal = true
+		} else if !address.IsUnspecified() && !address.IsMulticast() {
+			hasPublic = true
 		}
-	} else {
-		for _, address := range addresses {
-			if !address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast() {
-				return "", errors.New("target must be on the local network")
-			}
-		}
+	}
+	if hasLocal && hasPublic {
+		return "", errors.New("target resolves to both local and public addresses")
+	}
+	if mode == "online" && !hasPublic {
+		return "", errors.New("online target must resolve to public addresses")
+	}
+	if mode != "online" && mode != "hybrid" && !hasLocal {
+		return "", errors.New("target must be on the local network")
+	}
+	if mode == "hybrid" && hasPublic && parsed.Scheme != "https" {
+		return "", errors.New("public NAS target must use HTTPS")
+	}
+	if !hasLocal && !hasPublic {
+		return "", errors.New("target does not resolve to a usable address")
 	}
 	return strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/"), nil
 }

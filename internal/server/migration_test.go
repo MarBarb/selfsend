@@ -82,7 +82,7 @@ func TestMigrationArchiveReceiverActivationAndClaim(t *testing.T) {
 	oldApp.Close()
 
 	targetDir := t.TempDir()
-	targetApp, err := New(Config{DataDir: targetDir, Version: "test"}, logger)
+	targetApp, err := New(Config{DataDir: targetDir, Version: "test", DeploymentType: store.DeploymentNAS, Provider: "zspace"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestMigrationArchiveReceiverActivationAndClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newInfo.InstanceID != oldInfo.InstanceID || newInfo.State != store.ServerStateActive || newInfo.ServerDeviceName != "Windows" {
+	if newInfo.InstanceID != oldInfo.InstanceID || newInfo.State != store.ServerStateActive || newInfo.ServerDeviceName != "Windows" || newInfo.DeploymentType != store.DeploymentNAS || newInfo.Provider != "zspace" {
 		t.Fatalf("unexpected migrated server info: %+v", newInfo)
 	}
 	items, err := migratedApp.store.ListTimeline(ctx, conversationID, 0, 50)
@@ -221,6 +221,9 @@ func TestValidateMigrationTarget(t *testing.T) {
 		{name: "public HTTP rejected", value: "http://1.1.1.1", mode: "online", ok: false},
 		{name: "private online rejected", value: "https://192.168.1.20", mode: "online", ok: false},
 		{name: "public local rejected", value: "https://1.1.1.1", mode: "local", ok: false},
+		{name: "hybrid local accepted", value: "http://192.168.1.20:8080", mode: "hybrid", want: "http://192.168.1.20:8080", ok: true},
+		{name: "hybrid public HTTPS accepted", value: "https://1.1.1.1", mode: "hybrid", want: "https://1.1.1.1", ok: true},
+		{name: "hybrid public HTTP rejected", value: "http://1.1.1.1", mode: "hybrid", ok: false},
 		{name: "credentials rejected", value: "https://user:pass@1.1.1.1", mode: "online", ok: false},
 	}
 	for _, test := range tests {

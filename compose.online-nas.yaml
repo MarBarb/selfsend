@@ -10,6 +10,8 @@ services:
     environment:
       SELFSEND_TRUST_PROXY: "true"
       SELFSEND_DISCOVERY: "true"
+      SELFSEND_DEPLOYMENT_TYPE: "nas"
+      SELFSEND_PROVIDER: ${SELFSEND_PROVIDER:-generic}
       SELFSEND_CANONICAL_URL: ${SELFSEND_PUBLIC_URL:-}
       # 推荐首次打开网页后创建管理员密码。
       # SELFSEND_ADMIN_PASSWORD: "replace-with-a-long-password"

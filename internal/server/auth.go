@@ -18,11 +18,11 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-const sessionCookieName = "selfsend_session"
-
 type credentials struct {
 	Password string `json:"password"`
 }
+
+const legacySessionCookieName = "selfsend_session"
 
 func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 	setup, err := a.store.IsSetup(r.Context())
@@ -78,13 +78,15 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		_ = a.store.DeleteSession(r.Context(), tokenHash(cookie.Value))
+	if token := a.sessionToken(r); token != "" {
+		_ = a.store.DeleteSession(r.Context(), tokenHash(token))
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.secureRequest(r),
-	})
+	for _, name := range []string{a.sessionCookie, legacySessionCookieName} {
+		http.SetCookie(w, &http.Cookie{
+			Name: name, Value: "", Path: "/", MaxAge: -1,
+			HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.secureRequest(r),
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -102,18 +104,18 @@ func (a *App) startSession(w http.ResponseWriter, r *http.Request, deviceID stri
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookieName, Value: token, Path: "/", Expires: expiresAt, MaxAge: 30 * 24 * 60 * 60,
+		Name: a.sessionCookie, Value: token, Path: "/", Expires: expiresAt, MaxAge: 30 * 24 * 60 * 60,
 		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.secureRequest(r),
 	})
 	return nil
 }
 
 func (a *App) currentDeviceID(r *http.Request) (string, error) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil || cookie.Value == "" {
+	token := a.sessionToken(r)
+	if token == "" {
 		return "", store.ErrNotFound
 	}
-	deviceID, err := a.store.SessionDevice(r.Context(), tokenHash(cookie.Value), time.Now())
+	deviceID, err := a.store.SessionDevice(r.Context(), tokenHash(token), time.Now())
 	if err != nil || deviceID == "" {
 		return "", store.ErrNotFound
 	}
@@ -121,12 +123,22 @@ func (a *App) currentDeviceID(r *http.Request) (string, error) {
 }
 
 func (a *App) authenticated(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil || cookie.Value == "" {
+	token := a.sessionToken(r)
+	if token == "" {
 		return false
 	}
-	valid, err := a.store.SessionValid(r.Context(), tokenHash(cookie.Value), time.Now())
+	valid, err := a.store.SessionValid(r.Context(), tokenHash(token), time.Now())
 	return err == nil && valid
+}
+
+func (a *App) sessionToken(r *http.Request) string {
+	if cookie, err := r.Cookie(a.sessionCookie); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	if cookie, err := r.Cookie(legacySessionCookieName); err == nil {
+		return cookie.Value
+	}
+	return ""
 }
 
 func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -210,6 +222,11 @@ func verifyPassword(password, encoded string) bool {
 func tokenHash(token string) string {
 	digest := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(digest[:])
+}
+
+func sessionCookieNameFor(instanceID string) string {
+	digest := sha256.Sum256([]byte(instanceID))
+	return "selfsend_session_" + hex.EncodeToString(digest[:6])
 }
 
 func parseIntHeader(r *http.Request, name string) (int64, error) {

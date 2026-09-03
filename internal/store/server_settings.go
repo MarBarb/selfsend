@@ -16,6 +16,9 @@ const (
 	ServerStateActive    = "active"
 	ServerStateMigrating = "migrating"
 	ServerStateRetired   = "retired"
+	DeploymentLocal      = "local"
+	DeploymentCloud      = "cloud"
+	DeploymentNAS        = "nas"
 )
 
 type ServerInfo struct {
@@ -26,6 +29,8 @@ type ServerInfo struct {
 	SuccessorURL     string `json:"successor_url,omitempty"`
 	ServerDeviceID   string `json:"server_device_id,omitempty"`
 	ServerDeviceName string `json:"server_device_name,omitempty"`
+	DeploymentType   string `json:"deployment_type"`
+	Provider         string `json:"provider,omitempty"`
 	MigrationEpoch   int64  `json:"migration_epoch"`
 }
 
@@ -45,6 +50,8 @@ INSERT OR IGNORE INTO settings(key, value) VALUES
   ('canonical_url', ''),
   ('server_state', 'active'),
   ('successor_url', ''),
+  ('deployment_type', 'local'),
+  ('provider', 'computer'),
   ('migration_epoch', '0'),
   ('handoff_secret', ?);`, instanceID, handoffSecret)
 	return err
@@ -73,9 +80,9 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 }
 
 func (s *Store) ServerInfo(ctx context.Context) (ServerInfo, error) {
-	keys := []string{"instance_id", "instance_name", "canonical_url", "server_state", "successor_url", "server_device_id", "migration_epoch"}
+	keys := []string{"instance_id", "instance_name", "canonical_url", "server_state", "successor_url", "server_device_id", "deployment_type", "provider", "migration_epoch"}
 	values := make(map[string]string, len(keys))
-	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings WHERE key IN ('instance_id','instance_name','canonical_url','server_state','successor_url','server_device_id','migration_epoch')`)
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings WHERE key IN ('instance_id','instance_name','canonical_url','server_state','successor_url','server_device_id','deployment_type','provider','migration_epoch')`)
 	if err != nil {
 		return ServerInfo{}, err
 	}
@@ -93,15 +100,43 @@ func (s *Store) ServerInfo(ctx context.Context) (ServerInfo, error) {
 	epoch, _ := strconv.ParseInt(values["migration_epoch"], 10, 64)
 	info := ServerInfo{
 		InstanceID: values["instance_id"], InstanceName: values["instance_name"], CanonicalURL: values["canonical_url"],
-		State: values["server_state"], SuccessorURL: values["successor_url"], ServerDeviceID: values["server_device_id"], MigrationEpoch: epoch,
+		State: values["server_state"], SuccessorURL: values["successor_url"], ServerDeviceID: values["server_device_id"],
+		DeploymentType: values["deployment_type"], Provider: values["provider"], MigrationEpoch: epoch,
 	}
 	if info.State == "" {
 		info.State = ServerStateActive
+	}
+	if info.DeploymentType == "" {
+		info.DeploymentType = DeploymentLocal
+	}
+	if info.Provider == "" && info.DeploymentType == DeploymentLocal {
+		info.Provider = "computer"
 	}
 	if info.ServerDeviceID != "" {
 		_ = s.db.QueryRowContext(ctx, `SELECT name FROM devices WHERE id = ?`, info.ServerDeviceID).Scan(&info.ServerDeviceName)
 	}
 	return info, nil
+}
+
+func (s *Store) SetDeployment(ctx context.Context, deploymentType, provider string) error {
+	if deploymentType != DeploymentLocal && deploymentType != DeploymentCloud && deploymentType != DeploymentNAS {
+		return fmt.Errorf("invalid deployment type %q", deploymentType)
+	}
+	provider = strings.TrimSpace(provider)
+	if len(provider) > 40 {
+		return errors.New("provider is too long")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for key, value := range map[string]string{"deployment_type": deploymentType, "provider": provider} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SetServerState(ctx context.Context, state, successorURL string) error {
@@ -121,7 +156,7 @@ func (s *Store) SetServerState(ctx context.Context, state, successorURL string) 
 	return tx.Commit()
 }
 
-func (s *Store) ActivateMigratedServer(ctx context.Context, hostName, hostAvatar, canonicalURL string) (Device, error) {
+func (s *Store) ActivateMigratedServer(ctx context.Context, hostName, hostAvatar, canonicalURL, deploymentType, provider string) (Device, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Device{}, err
@@ -134,6 +169,13 @@ func (s *Store) ActivateMigratedServer(ctx context.Context, hostName, hostAvatar
 	}
 	if hostAvatar == "" {
 		hostAvatar = "💻"
+	}
+	if deploymentType != DeploymentLocal && deploymentType != DeploymentCloud && deploymentType != DeploymentNAS {
+		deploymentType = DeploymentLocal
+	}
+	provider = strings.TrimSpace(provider)
+	if len(provider) > 40 {
+		provider = ""
 	}
 	var deviceID string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM devices WHERE name = ? COLLATE NOCASE LIMIT 1`, hostName).Scan(&deviceID)
@@ -163,6 +205,8 @@ func (s *Store) ActivateMigratedServer(ctx context.Context, hostName, hostAvatar
 		"server_state":     ServerStateActive,
 		"successor_url":    "",
 		"canonical_url":    strings.TrimRight(canonicalURL, "/"),
+		"deployment_type":  deploymentType,
+		"provider":         provider,
 		"migration_epoch":  strconv.FormatInt(epoch+1, 10),
 	}
 	for key, value := range settings {

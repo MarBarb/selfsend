@@ -24,20 +24,23 @@ import (
 )
 
 type Config struct {
-	ListenAddr    string
-	DataDir       string
-	AdminPassword string
-	MaxUploadSize int64
-	TrustProxy    bool
-	Version       string
-	CanonicalURL  string
-	Discovery     bool
-	restart       func()
+	ListenAddr     string
+	DataDir        string
+	AdminPassword  string
+	MaxUploadSize  int64
+	TrustProxy     bool
+	Version        string
+	CanonicalURL   string
+	DeploymentType string
+	Provider       string
+	Discovery      bool
+	restart        func()
 }
 
 type App struct {
 	config        Config
 	store         *store.Store
+	sessionCookie string
 	logger        *slog.Logger
 	hub           *eventHub
 	uploadsMu     sync.Mutex
@@ -61,6 +64,11 @@ func New(config Config, logger *slog.Logger) (*App, error) {
 	if config.MaxUploadSize <= 0 {
 		config.MaxUploadSize = 20 << 30
 	}
+	config.DeploymentType = strings.ToLower(strings.TrimSpace(config.DeploymentType))
+	config.Provider = strings.TrimSpace(config.Provider)
+	if config.DeploymentType != "" && config.DeploymentType != store.DeploymentLocal && config.DeploymentType != store.DeploymentCloud && config.DeploymentType != store.DeploymentNAS {
+		return nil, fmt.Errorf("invalid deployment type %q", config.DeploymentType)
+	}
 	if err := applyPendingMigration(config.DataDir, logger); err != nil {
 		return nil, err
 	}
@@ -68,7 +76,7 @@ func New(config Config, logger *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := finishPendingMigration(config.DataDir, db, config.CanonicalURL); err != nil {
+	if err := finishPendingMigration(config.DataDir, db, config.CanonicalURL, config.DeploymentType, config.Provider); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("finish incoming migration: %w", err)
 	}
@@ -86,6 +94,12 @@ func New(config Config, logger *slog.Logger) (*App, error) {
 			return nil, fmt.Errorf("save canonical URL: %w", err)
 		}
 	}
+	if config.DeploymentType != "" {
+		if err := db.SetDeployment(context.Background(), config.DeploymentType, config.Provider); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("save deployment type: %w", err)
+		}
+	}
 	if err := os.MkdirAll(pathFor(config.DataDir, "uploads"), 0o750); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create uploads directory: %w", err)
@@ -95,7 +109,12 @@ func New(config Config, logger *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("create blobs directory: %w", err)
 	}
 
-	app := &App{config: config, store: db, logger: logger, hub: newEventHub(), backups: make(map[string]string)}
+	serverInfo, err := db.ServerInfo(context.Background())
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("read server identity: %w", err)
+	}
+	app := &App{config: config, store: db, sessionCookie: sessionCookieNameFor(serverInfo.InstanceID), logger: logger, hub: newEventHub(), backups: make(map[string]string)}
 	app.web, err = staticHandler()
 	if err != nil {
 		db.Close()

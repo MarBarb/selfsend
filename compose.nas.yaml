@@ -12,6 +12,8 @@ services:
     environment:
       SELFSEND_TRUST_PROXY: "false"
       SELFSEND_DISCOVERY: "true"
+      SELFSEND_DEPLOYMENT_TYPE: "nas"
+      SELFSEND_PROVIDER: "generic"
       # 如果局域网 DNS 提供稳定域名，可以取消注释并填写地址。
       # SELFSEND_CANONICAL_URL: "http://selfsend.home:8080"
     security_opt:

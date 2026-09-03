@@ -8,6 +8,35 @@ import (
 	"time"
 )
 
+func TestServerDeploymentSettings(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	info, err := db.ServerInfo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.DeploymentType != DeploymentLocal || info.Provider != "computer" {
+		t.Fatalf("default deployment = %q/%q", info.DeploymentType, info.Provider)
+	}
+	if err := db.SetDeployment(ctx, DeploymentNAS, "zspace"); err != nil {
+		t.Fatal(err)
+	}
+	info, err = db.ServerInfo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.DeploymentType != DeploymentNAS || info.Provider != "zspace" {
+		t.Fatalf("saved deployment = %q/%q", info.DeploymentType, info.Provider)
+	}
+	if err := db.SetDeployment(ctx, "unsupported", ""); err == nil {
+		t.Fatal("unsupported deployment type was accepted")
+	}
+}
+
 func TestDeviceNamesAreUniqueAndAllDevicesAreConnected(t *testing.T) {
 	dataDir := t.TempDir()
 	store, err := Open(dataDir)
